@@ -1,6 +1,6 @@
 let me = JSON.parse(localStorage.getItem('gp_me') || 'null');
 let hostPw = sessionStorage.getItem('gp_host') || null;
-let activeTab = 'lobby';
+let activeTab = 'home';
 let pollTimer = null;
 
 const app = document.getElementById('app');
@@ -53,8 +53,7 @@ async function boot() {
 function renderTab() {
   setNavActive();
   clearInterval(pollTimer);
-  if (activeTab === 'lobby') renderLobby();
-  else if (activeTab === 'draft') { renderDraft(); pollTimer = setInterval(renderDraft, 3000); }
+  if (activeTab === 'home') { renderHome(); pollTimer = setInterval(renderHome, 3000); }
   else if (activeTab === 'picks') renderPicks();
   else if (activeTab === 'scoreboard') renderScoreboard();
   else if (activeTab === 'host') renderHostAdmin();
@@ -103,36 +102,44 @@ function renderLoginGate() {
   };
 }
 
-// ---------------- Lobby ----------------
-async function renderLobby() {
+// ---------------- Home (lobby status + live draft, merged) ----------------
+async function renderHome() {
+  await api('/api/draft/auto-check', { method: 'POST' }).catch(() => {});
   const state = await api('/api/state');
-  app.innerHTML = `
+
+  const rosterCard = `
     <div class="card">
       <h2>League</h2>
       <h1>${state.phase === 'lobby' ? 'Waiting to draft' : state.phase === 'draft' ? 'Draft in progress' : `Season · Week ${state.currentWeek}`}</h1>
       <p class="muted">${state.players.length} player${state.players.length === 1 ? '' : 's'} joined${state.teamCap ? ` · each team draftable by up to ${state.teamCap} player${state.teamCap === 1 ? '' : 's'}` : ''}</p>
       <div class="row">${state.players.map(p => `<span class="pill ${p.id === me.id ? 'gold' : ''}">${p.name}</span>`).join('')}</div>
     </div>
-    <div class="card">
-      <h2>How this works</h2>
-      <p class="muted">The host starts the draft once everyone's registered (Host tab). Then head to the <b>Draft</b> tab when it's live, <b>My Picks</b> once the season starts, and check the <b>Scoreboard</b> any time.</p>
-    </div>
   `;
-}
-
-// ---------------- Draft ----------------
-async function renderDraft() {
-  await api('/api/draft/auto-check', { method: 'POST' }).catch(() => {});
-  const state = await api('/api/state');
 
   if (state.phase === 'lobby') {
-    app.innerHTML = `<div class="card"><h1>Draft hasn't started</h1><p class="muted">Waiting on the host to start the draft from the Host tab.</p></div>`;
+    app.innerHTML = rosterCard + `
+      <div class="card">
+        <h2>How this works</h2>
+        <p class="muted">The host starts the draft once everyone's registered (Host tab). The live draft will appear right here once it begins. Then it's <b>My Picks</b> once the season starts, and check the <b>Scoreboard</b> any time.</p>
+      </div>
+    `;
     return;
   }
 
+  if (state.phase === 'season') {
+    app.innerHTML = rosterCard + `
+      <div class="card">
+        <h2>Season underway</h2>
+        <p class="muted">The draft's done. Head to <b>My Picks</b> to submit this week's pick, or check the <b>Scoreboard</b> any time.</p>
+      </div>
+    `;
+    return;
+  }
+
+  // phase === 'draft'
   const n = state.draftOrder ? state.draftOrder.length : 0;
   const totalPicks = n * state.rounds;
-  const draftDone = state.phase !== 'draft' || state.currentPickIndex >= totalPicks;
+  const draftDone = state.currentPickIndex >= totalPicks;
 
   const nameById = {};
   state.players.forEach(p => { nameById[p.id] = p.name; });
@@ -166,10 +173,10 @@ async function renderDraft() {
     `;
   }).join('');
 
-  app.innerHTML = `
+  app.innerHTML = rosterCard + `
     <div class="card">
       <h2>${draftDone ? 'Draft complete' : 'Live draft'}</h2>
-      ${draftDone ? `<p class="muted">All 16 rounds are done. Waiting on the host to assign the shared 17th team.</p>` : timerHtml}
+      ${draftDone ? `<p class="muted">All ${state.rounds} rounds are done. Waiting on the host to assign the shared 17th team.</p>` : timerHtml}
     </div>
     ${!draftDone ? `
     <div class="card">
@@ -190,7 +197,7 @@ async function renderDraft() {
       const errEl = document.getElementById('draft-err');
       try {
         await api('/api/draft/pick', { method: 'POST', body: { team } });
-        renderDraft();
+        renderHome();
       } catch (e) { if (errEl) errEl.textContent = e.message; }
     });
   });
@@ -275,11 +282,43 @@ async function renderScoreboard() {
 
 // ---------------- Host admin ----------------
 async function renderHostAdmin() {
+  // Gate: show nothing but the password box until it's unlocked.
+  if (!hostPw) {
+    app.innerHTML = `
+      <div class="card" style="max-width:420px;margin:40px auto;">
+        <h2>Host login</h2>
+        <p class="muted">This password is set in the server's environment — only whoever knows it sees host controls. It's separate from any player's name/PIN.</p>
+        <div class="field"><label>Host password</label><input id="host-pw" type="password" /></div>
+        <button class="btn secondary" id="host-login-btn">Unlock host controls</button>
+        <div class="error" id="host-login-err"></div>
+      </div>
+    `;
+    document.getElementById('host-login-btn').onclick = async () => {
+      const pw = document.getElementById('host-pw').value;
+      const err = document.getElementById('host-login-err');
+      err.textContent = '';
+      try {
+        const headers = { 'Content-Type': 'application/json', 'x-host-password': pw };
+        const res = await fetch('/api/host/login', { method: 'POST', headers });
+        if (!res.ok) throw new Error((await res.json()).error || 'Wrong password');
+        hostPw = pw;
+        sessionStorage.setItem('gp_host', pw);
+        renderHostAdmin();
+      } catch (e) { err.textContent = e.message; }
+    };
+    return;
+  }
+
   const state = await api('/api/state');
-  let pendingRequests = [];
-  if (hostPw) {
-    try { pendingRequests = await api('/api/join-requests', { asHost: true }); }
-    catch (e) { hostPw = null; sessionStorage.removeItem('gp_host'); }
+  let pendingRequests;
+  try {
+    pendingRequests = await api('/api/join-requests', { asHost: true });
+  } catch (e) {
+    // Stored password no longer valid — drop back to the login gate.
+    hostPw = null;
+    sessionStorage.removeItem('gp_host');
+    renderHostAdmin();
+    return;
   }
 
   const pendingHtml = pendingRequests.length
@@ -295,18 +334,16 @@ async function renderHostAdmin() {
 
   app.innerHTML = `
     <div class="card">
-      <h2>Host login</h2>
-      <p class="muted">This password is set in the server's environment — only whoever knows it sees host controls. It's separate from any player's name/PIN.</p>
-      <div class="field"><label>Host password</label><input id="host-pw" type="password" value="${hostPw ? hostPw : ''}" /></div>
-      <button class="btn secondary" id="host-login-btn">Unlock host controls</button>
-      <div class="error" id="host-login-err"></div>
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <h2 style="margin:0;">Host controls</h2>
+        <button class="btn secondary" id="host-logout-btn" style="padding:6px 12px;font-size:11px;">Lock</button>
+      </div>
     </div>
-    ${hostPw ? `
     <div class="card">
       <h2>Pending join requests</h2>
       ${pendingHtml}
       <div class="error" id="join-req-err"></div>
-    </div>` : ''}
+    </div>
     <div class="card">
       <h2>Draft controls</h2>
       <p class="muted">Phase: <b>${state.phase}</b>${state.phase === 'draft' ? ` · pick ${state.currentPickIndex + 1}` : ''}</p>
@@ -324,6 +361,7 @@ async function renderHostAdmin() {
     <div class="card">
       <h2>Weekly odds &amp; results</h2>
       <p class="muted">Current active week: <b>${state.currentWeek || '—'}</b></p>
+      <p class="muted">Spreads sync, results sync, missed-pick handling, and the week advance now run automatically every <b>Tuesday at 8:00am ET</b>${state.lastAutoRun ? ' · last ran ' + state.lastAutoRun : ' · hasn\'t run yet'}. The buttons below are a manual override — use them only if you need to force a re-sync or the automation didn\'t fire.</p>
       <div class="field"><label>Week number</label><input id="week-num" type="number" value="${state.currentWeek || 1}" /></div>
       <div class="row">
         <button class="btn secondary" id="sync-odds-btn">Sync spreads for this week</button>
@@ -339,18 +377,10 @@ async function renderHostAdmin() {
     </div>
   `;
 
-  document.getElementById('host-login-btn').onclick = async () => {
-    const pw = document.getElementById('host-pw').value;
-    const err = document.getElementById('host-login-err');
-    err.textContent = '';
-    try {
-      const headers = { 'Content-Type': 'application/json', 'x-host-password': pw };
-      const res = await fetch('/api/host/login', { method: 'POST', headers });
-      if (!res.ok) throw new Error((await res.json()).error || 'Wrong password');
-      hostPw = pw;
-      sessionStorage.setItem('gp_host', pw);
-      renderHostAdmin();
-    } catch (e) { err.className = 'error'; err.textContent = e.message; }
+  document.getElementById('host-logout-btn').onclick = () => {
+    hostPw = null;
+    sessionStorage.removeItem('gp_host');
+    renderHostAdmin();
   };
 
   app.querySelectorAll('[data-approve]').forEach(btn => {
