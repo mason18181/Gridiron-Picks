@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const cron = require('node-cron');
 const { pool, initSchema } = require('./db');
 const { TEAMS } = require('./teams');
 const { syncWeekOdds, syncWeekResults } = require('./odds');
@@ -123,6 +124,7 @@ app.get('/api/state', async (req, res) => {
     pickDeadline: cfg.pick_deadline,
     rounds: cfg.rounds,
     currentTurnPlayerId,
+    lastAutoRun: cfg.last_auto_run,
     players,
     draftPicks,
     teams,
@@ -330,8 +332,10 @@ app.post('/api/host/sync-results', requireHost, async (req, res) => {
   }
 });
 
-app.post('/api/host/process-missed', requireHost, async (req, res) => {
-  const { week } = req.body;
+// Auto-assigns team 17 (or a forfeit) to any player who never submitted a
+// pick for the given week. Shared by the manual host button and the
+// automated Tuesday-morning job.
+async function processMissedPicksForWeek(week) {
   const cfg = (await pool.query('SELECT seventeenth_team FROM config WHERE id=1')).rows[0];
   const players = (await pool.query('SELECT id FROM players')).rows;
   let assigned = 0, forfeited = 0;
@@ -363,7 +367,13 @@ app.post('/api/host/process-missed', requireHost, async (req, res) => {
       forfeited++;
     }
   }
-  res.json({ ok: true, assigned, forfeited });
+  return { assigned, forfeited };
+}
+
+app.post('/api/host/process-missed', requireHost, async (req, res) => {
+  const { week } = req.body;
+  const result = await processMissedPicksForWeek(week);
+  res.json({ ok: true, ...result });
 });
 
 app.post('/api/host/advance-week', requireHost, async (req, res) => {
@@ -402,8 +412,63 @@ app.get('/api/scoreboard', async (req, res) => {
   res.json(board);
 });
 
+// ---------- weekly automation ----------
+// Runs every Tuesday at 8:00am Eastern: syncs final scores for the week
+// that just finished, auto-assigns team 17 (or a forfeit) to anyone who
+// never picked, advances to the next week, then syncs fresh spreads for
+// that new week (this is what locks in favorite/even/upset for it).
+// Guarded by config.last_auto_run so a container restart near 8am can't
+// make it run twice in the same day.
+async function runWeeklyAutomation() {
+  try {
+    const cfg = (await pool.query('SELECT * FROM config WHERE id=1')).rows[0];
+    if (cfg.phase !== 'season') {
+      console.log('Weekly automation skipped: season has not started yet');
+      return;
+    }
+
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+    if (cfg.last_auto_run === today) {
+      console.log('Weekly automation skipped: already ran today');
+      return;
+    }
+
+    const outgoingWeek = cfg.current_week;
+
+    try {
+      const n = await syncWeekResults(outgoingWeek);
+      console.log(`Auto sync-results: wrote ${n} rows for week ${outgoingWeek}`);
+    } catch (e) {
+      console.error('Auto sync-results failed', e);
+    }
+
+    try {
+      const { assigned, forfeited } = await processMissedPicksForWeek(outgoingWeek);
+      console.log(`Auto process-missed: assigned ${assigned}, forfeited ${forfeited} for week ${outgoingWeek}`);
+    } catch (e) {
+      console.error('Auto process-missed failed', e);
+    }
+
+    await pool.query('UPDATE config SET current_week = current_week + 1 WHERE id=1');
+    const newWeek = outgoingWeek + 1;
+
+    try {
+      const n = await syncWeekOdds(newWeek);
+      console.log(`Auto sync-odds: wrote ${n} rows for week ${newWeek}`);
+    } catch (e) {
+      console.error('Auto sync-odds failed', e);
+    }
+
+    await pool.query('UPDATE config SET last_auto_run = $1 WHERE id=1', [today]);
+    console.log(`Weekly automation complete: advanced week ${outgoingWeek} -> ${newWeek}`);
+  } catch (e) {
+    console.error('Weekly automation failed', e);
+  }
+}
+
+cron.schedule('0 8 * * 2', runWeeklyAutomation, { timezone: 'America/New_York' });
+
 const PORT = process.env.PORT || 3000;
 initSchema()
   .then(() => app.listen(PORT, () => console.log(`Gridiron Picks running on port ${PORT}`)))
   .catch(err => { console.error('Failed to init schema', err); process.exit(1); });
-
