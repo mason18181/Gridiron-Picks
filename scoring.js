@@ -1,158 +1,80 @@
-:root {
-  --bg: #0B1210;
-  --surface: #141F1B;
-  --surface-2: #1B2924;
-  --line: #263731;
-  --gold: #E8B94A;
-  --green: #4A9B7F;
-  --text: #EDEAE3;
-  --muted: #8AA098;
-  --danger: #C2493D;
-  --win: #4A9B7F;
-  --radius: 10px;
+// Computes each player's running score, week by week, applying the
+// loss-streak and team-17 risk-free rules.
+//
+// picksByPlayer: { playerId: [{ week, team }, ...] }  (any order; we sort by week)
+// oddsByWeek:    { week: { TEAM: { opponent, spread, commence_time } } }
+// resultsByWeek: { week: { TEAM: 'W' | 'L' } }
+function matchupType(spread) {
+  if (spread === null || spread === undefined) return 'unknown';
+  const abs = Math.abs(Number(spread));
+  if (abs < 4) return 'even';
+  return Number(spread) < 0 ? 'favorite' : 'upset';
 }
 
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Inter', sans-serif;
-  min-height: 100vh;
+function pointsForWin(type) {
+  if (type === 'even') return 1.5;
+  if (type === 'upset') return 2;
+  return 1; // favorite or unknown treated as favorite-value
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, #101815, #0B1210);
-  flex-wrap: wrap;
-  gap: 12px;
+function computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam) {
+  const sorted = [...picks].sort((a, b) => a.week - b.week);
+  let streak = 0;
+  let total = 0;
+  const rows = [];
+
+  for (const pick of sorted) {
+    const { week, team } = pick;
+    const result = resultsByWeek[week] && resultsByWeek[week][team];
+    const odds = oddsByWeek[week] && oddsByWeek[week][team];
+    const spread = odds ? odds.spread : null;
+    const type = matchupType(spread);
+    const isTeam17 = seventeenthTeam && team === seventeenthTeam;
+
+    if (!result) {
+      rows.push({ week, team, status: 'pending', points: 0, matchupType: type });
+      continue;
+    }
+
+    let points;
+    if (result === 'W') {
+      points = pointsForWin(type);
+      if (!isTeam17) streak = 0;
+    } else if (isTeam17) {
+      points = 0; // risk-free pick, no penalty, streak untouched
+    } else {
+      streak += 1;
+      if (streak >= 2) {
+        points = -1;
+      } else {
+        points = type === 'favorite' ? -0.5 : 0;
+      }
+    }
+
+    total += points;
+    rows.push({ week, team, status: result, points, matchupType: type, streakAtPick: isTeam17 ? null : streak });
+  }
+
+  return { total, rows, currentStreak: streak };
 }
 
-.brand {
-  font-family: 'Oswald', sans-serif;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  font-size: 20px;
-}
-.brand span { color: var(--gold); }
+function computeScoreboard(players, picksByPlayer, oddsByWeek, resultsByWeek, seventeenthTeam) {
+  const entries = players.map(p => {
+    const picks = picksByPlayer[p.id] || [];
+    const { total, rows, currentStreak } = computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam);
+    return { playerId: p.id, name: p.name, total: Math.round(total * 100) / 100, rows, currentStreak };
+  });
 
-.nav { display: flex; gap: 6px; flex-wrap: wrap; }
-.nav.hidden { display: none; }
-.nav button {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--muted);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-family: 'Oswald', sans-serif;
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  text-transform: uppercase;
-}
-.nav button:hover { border-color: var(--gold); color: var(--text); }
-.nav button.active { background: var(--gold); color: #1a1400; border-color: var(--gold); }
+  entries.sort((a, b) => b.total - a.total);
+  let rank = 0;
+  let prevScore = null;
+  entries.forEach((e, i) => {
+    if (e.total !== prevScore) rank = i + 1;
+    e.rank = rank;
+    prevScore = e.total;
+  });
 
-.whoami { font-size: 13px; color: var(--muted); }
-
-main { max-width: 960px; margin: 0 auto; padding: 28px 20px 80px; }
-
-h1, h2, h3 { font-family: 'Oswald', sans-serif; font-weight: 600; letter-spacing: 0.02em; margin: 0 0 12px; }
-h1 { font-size: 26px; }
-h2 { font-size: 18px; color: var(--gold); text-transform: uppercase; font-size: 14px; letter-spacing: 0.1em; margin-bottom: 16px; }
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 20px;
+  return entries;
 }
 
-.field { margin-bottom: 12px; }
-.field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
-input {
-  width: 100%;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  color: var(--text);
-  padding: 10px 12px;
-  border-radius: 6px;
-  font-size: 14px;
-}
-input:focus { outline: none; border-color: var(--gold); }
-
-button.btn {
-  background: var(--gold);
-  color: #1a1400;
-  border: none;
-  padding: 10px 18px;
-  border-radius: 6px;
-  font-family: 'Oswald', sans-serif;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  cursor: pointer;
-  font-size: 13px;
-  text-transform: uppercase;
-}
-button.btn:hover { filter: brightness(1.08); }
-button.btn.secondary { background: transparent; border: 1px solid var(--green); color: var(--green); }
-button.btn.danger { background: var(--danger); color: white; }
-button.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-
-.pill {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-}
-.pill.gold { color: var(--gold); border-color: var(--gold); }
-.pill.win { color: var(--win); border-color: var(--win); }
-.pill.loss { color: var(--danger); border-color: var(--danger); }
-
-.team-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-}
-.team-card {
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
-  cursor: pointer;
-  transition: border-color 0.15s;
-}
-.team-card:hover { border-color: var(--gold); }
-.team-card.disabled { opacity: 0.35; cursor: not-allowed; }
-.team-card.selected { border-color: var(--gold); background: rgba(232,185,74,0.08); }
-.team-abbr { font-family: 'Oswald', sans-serif; font-weight: 700; font-size: 16px; }
-.team-meta { font-size: 11px; color: var(--muted); margin-top: 4px; font-family: 'JetBrains Mono', monospace; }
-
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
-th { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; }
-td.num { font-family: 'JetBrains Mono', monospace; }
-tr.me { background: rgba(232,185,74,0.06); }
-
-.timer {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 28px;
-  color: var(--gold);
-}
-
-.muted { color: var(--muted); font-size: 13px; }
-.error { color: var(--danger); font-size: 13px; margin-top: 6px; }
-.success { color: var(--green); font-size: 13px; margin-top: 6px; }
-
-.divider { height: 1px; background: var(--line); margin: 18px 0; }
+module.exports = { computeScoreboard, computePlayerHistory, matchupType };
