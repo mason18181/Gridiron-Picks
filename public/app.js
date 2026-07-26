@@ -1,7 +1,15 @@
 let me = JSON.parse(localStorage.getItem('gp_me') || 'null');
 let hostPw = sessionStorage.getItem('gp_host') || null;
-let activeTab = 'home';
+
+let activeTab = 'home';           // normal-mode tab: home | picks | scoreboard | host
+let draftMode = false;            // true while the player is inside the Draft/Players pages
+let draftSubTab = 'draft';        // draft-mode tab: draft | players
+let scoreboardSubTab = 'overview'; // scoreboard subtab: overview | history | analytics
+let scoreboardHistoryFilter = 'all';
+
 let pollTimer = null;
+let draftSelection = null; // team the player has clicked but not yet submitted, in the live draft
+let pickSelection = null;  // team the player has clicked but not yet submitted, in My Picks
 
 const app = document.getElementById('app');
 const nav = document.getElementById('nav');
@@ -20,7 +28,8 @@ async function api(path, { method = 'GET', body, asHost = false } = {}) {
 nav.addEventListener('click', e => {
   const btn = e.target.closest('button[data-tab]');
   if (!btn) return;
-  activeTab = btn.dataset.tab;
+  if (draftMode) draftSubTab = btn.dataset.tab;
+  else activeTab = btn.dataset.tab;
   renderTab();
 });
 
@@ -28,13 +37,29 @@ whoami.addEventListener('click', () => {
   if (!me) return;
   if (confirm('Switch player?')) {
     me = null;
+    draftMode = false;
     localStorage.removeItem('gp_me');
     boot();
   }
 });
 
-function setNavActive() {
-  [...nav.querySelectorAll('button')].forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
+function renderNav() {
+  if (draftMode) {
+    nav.innerHTML = `
+      <button data-tab="draft">Draft</button>
+      <button data-tab="players">Players</button>
+      <button data-tab="host">Host</button>
+    `;
+  } else {
+    nav.innerHTML = `
+      <button data-tab="home">Home</button>
+      <button data-tab="picks">My Picks</button>
+      <button data-tab="scoreboard">Scoreboard</button>
+      <button data-tab="host">Host</button>
+    `;
+  }
+  const current = draftMode ? draftSubTab : activeTab;
+  [...nav.querySelectorAll('button')].forEach(b => b.classList.toggle('active', b.dataset.tab === current));
 }
 
 async function boot() {
@@ -51,8 +76,16 @@ async function boot() {
 }
 
 function renderTab() {
-  setNavActive();
+  renderNav();
   clearInterval(pollTimer);
+
+  if (draftMode) {
+    if (draftSubTab === 'players') { renderPlayersPage(); pollTimer = setInterval(renderPlayersPage, 2000); }
+    else if (draftSubTab === 'host') { renderDraftHostPage(); pollTimer = setInterval(renderDraftHostPage, 3000); }
+    else { renderDraftPage(); pollTimer = setInterval(renderDraftPage, 2000); }
+    return;
+  }
+
   if (activeTab === 'home') { renderHome(); pollTimer = setInterval(renderHome, 3000); }
   else if (activeTab === 'picks') renderPicks();
   else if (activeTab === 'scoreboard') renderScoreboard();
@@ -89,7 +122,6 @@ function renderLoginGate() {
         boot();
         return;
       }
-      // Unrecognized name — confirm before submitting a join request.
       if (res.pendingRequest) {
         ok.textContent = "You've already got a request pending — wait for the host to approve it, then log in again with the same name and PIN.";
         return;
@@ -102,7 +134,7 @@ function renderLoginGate() {
   };
 }
 
-// ---------------- Home (lobby status + live draft, merged) ----------------
+// ---------------- Home ----------------
 async function renderHome() {
   await api('/api/draft/auto-check', { method: 'POST' }).catch(() => {});
   const state = await api('/api/state');
@@ -111,32 +143,87 @@ async function renderHome() {
     <div class="card">
       <h2>League</h2>
       <h1>${state.phase === 'lobby' ? 'Waiting to draft' : state.phase === 'draft' ? 'Draft in progress' : `Season · Week ${state.currentWeek}`}</h1>
-      <p class="muted">${state.players.length} player${state.players.length === 1 ? '' : 's'} joined${state.teamCap ? ` · each team draftable by up to ${state.teamCap} player${state.teamCap === 1 ? '' : 's'}` : ''}</p>
+      <p class="muted">${state.players.length} player${state.players.length === 1 ? '' : 's'} joined</p>
       <div class="row">${state.players.map(p => `<span class="pill ${p.id === me.id ? 'gold' : ''}">${p.name}</span>`).join('')}</div>
+      <div class="divider"></div>
+      <button class="btn" id="enter-draft-btn" ${state.phase !== 'draft' ? 'disabled' : ''}>Enter Draft</button>
     </div>
   `;
 
+  let bodyCard = '';
   if (state.phase === 'lobby') {
-    app.innerHTML = rosterCard + `
+    bodyCard = `
       <div class="card">
         <h2>How this works</h2>
-        <p class="muted">The host starts the draft once everyone's registered (Host tab). The live draft will appear right here once it begins. Then it's <b>My Picks</b> once the season starts, and check the <b>Scoreboard</b> any time.</p>
+        <p class="muted">The host starts the draft once everyone's registered (Host tab). Once it begins, <b>Enter Draft</b> above lights up and takes you to the live draft. Then it's <b>My Picks</b> once the season starts, and check the <b>Scoreboard</b> any time.</p>
       </div>
     `;
-    return;
-  }
-
-  if (state.phase === 'season') {
-    app.innerHTML = rosterCard + `
+  } else if (state.phase === 'draft') {
+    bodyCard = `
+      <div class="card">
+        <h2>Draft is live</h2>
+        <p class="muted">Click <b>Enter Draft</b> above to see who's on the clock, browse rosters, and make your picks.</p>
+      </div>
+    `;
+  } else {
+    bodyCard = `
       <div class="card">
         <h2>Season underway</h2>
         <p class="muted">The draft's done. Head to <b>My Picks</b> to submit this week's pick, or check the <b>Scoreboard</b> any time.</p>
       </div>
     `;
-    return;
   }
 
-  // phase === 'draft'
+  app.innerHTML = rosterCard + bodyCard;
+
+  const enterBtn = document.getElementById('enter-draft-btn');
+  if (enterBtn) {
+    enterBtn.onclick = () => {
+      if (state.phase !== 'draft') return;
+      draftMode = true;
+      draftSubTab = 'draft';
+      draftSelection = null;
+      renderTab();
+    };
+  }
+}
+
+// ---------------- Draft mode: shared clock bar ----------------
+function draftClockBarHtml(state, nameById, draftDone) {
+  if (draftDone) {
+    return `<div class="card"><h2>Draft status</h2><p class="muted">All ${state.rounds} rounds are done. Waiting on the host to assign the shared 17th team.</p></div>`;
+  }
+  if (!state.pickDeadline) return '';
+  const n = state.draftOrder.length;
+  const secsLeft = Math.max(0, Math.round((new Date(state.pickDeadline).getTime() - Date.now()) / 1000));
+  const turnName = nameById[state.currentTurnPlayerId] || '?';
+  return `
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <div><span class="muted">On the clock:</span> <b>${turnName}</b>${state.currentTurnPlayerId === me.id ? ' <span class="pill gold">YOU</span>' : ''}</div>
+        <div class="timer">${secsLeft}s</div>
+      </div>
+      <p class="muted" style="margin:8px 0 0;">Round ${Math.floor(state.currentPickIndex / n) + 1} of ${state.rounds} · Pick ${state.currentPickIndex + 1} of ${n * state.rounds}</p>
+    </div>
+  `;
+}
+
+function exitDraftModeIfOver(state) {
+  if (state.phase !== 'draft') {
+    draftMode = false;
+    activeTab = 'home';
+    renderTab();
+    return true;
+  }
+  return false;
+}
+
+// ---------------- Draft mode: Draft page ----------------
+async function renderDraftPage() {
+  await api('/api/draft/auto-check', { method: 'POST' }).catch(() => {});
+  const state = await api('/api/state');
+  if (exitDraftModeIfOver(state)) return;
+
   const n = state.draftOrder ? state.draftOrder.length : 0;
   const totalPicks = n * state.rounds;
   const draftDone = state.currentPickIndex >= totalPicks;
@@ -144,28 +231,18 @@ async function renderHome() {
   const nameById = {};
   state.players.forEach(p => { nameById[p.id] = p.name; });
 
-  let timerHtml = '';
-  if (!draftDone && state.pickDeadline) {
-    const secsLeft = Math.max(0, Math.round((new Date(state.pickDeadline).getTime() - Date.now()) / 1000));
-    const turnName = nameById[state.currentTurnPlayerId] || '?';
-    timerHtml = `
-      <div class="row" style="justify-content:space-between;align-items:center;">
-        <div><span class="muted">On the clock:</span> <b>${turnName}</b>${state.currentTurnPlayerId === me.id ? ' <span class="pill gold">YOU</span>' : ''}</div>
-        <div class="timer">${secsLeft}s</div>
-      </div>
-      <p class="muted">Round ${Math.floor(state.currentPickIndex / n) + 1} of ${state.rounds} · Pick ${state.currentPickIndex + 1} of ${totalPicks}</p>
-    `;
-  }
-
   const myTurn = !draftDone && state.currentTurnPlayerId === me.id;
+  if (!myTurn) draftSelection = null; // clear any stale selection once it's not your turn
+
   const draftedByMe = state.draftPicks.filter(p => p.player_id === me.id).map(p => p.team);
 
   const teamGrid = state.teams.map(t => {
     const full = t.drafted >= state.teamCap;
     const mine = draftedByMe.includes(t.abbr);
     const disabled = full || mine || !myTurn;
+    const selected = draftSelection === t.abbr;
     return `
-      <div class="team-card ${disabled ? 'disabled' : ''}" data-team="${t.abbr}" ${disabled ? '' : 'data-pickable="1"'}>
+      <div class="team-card ${disabled ? 'disabled' : ''} ${selected ? 'selected' : ''}" data-team="${t.abbr}" ${disabled ? '' : 'data-pickable="1"'}>
         <div class="team-abbr">${t.abbr}</div>
         <div class="team-meta">${t.name}</div>
         <div class="team-meta">${t.drafted}/${state.teamCap} drafted</div>
@@ -173,18 +250,17 @@ async function renderHome() {
     `;
   }).join('');
 
-  app.innerHTML = rosterCard + `
-    <div class="card">
-      <h2>${draftDone ? 'Draft complete' : 'Live draft'}</h2>
-      ${draftDone ? `<p class="muted">All ${state.rounds} rounds are done. Waiting on the host to assign the shared 17th team.</p>` : timerHtml}
-    </div>
-    ${!draftDone ? `
+  app.innerHTML = draftClockBarHtml(state, nameById, draftDone) + (draftDone ? '' : `
     <div class="card">
       <h2>Team bank</h2>
-      <p class="muted">${myTurn ? 'Your pick — click a team.' : 'Waiting for your turn.'}</p>
+      <p class="muted">${myTurn ? (draftSelection ? `Selected <b>${draftSelection}</b> — click Submit to confirm.` : 'Your pick — click a team, then submit.') : 'Waiting for your turn.'}</p>
       <div class="team-grid">${teamGrid}</div>
+      <div class="row" style="margin-top:14px;">
+        <button class="btn" id="submit-draft-pick-btn" ${myTurn && draftSelection ? '' : 'disabled'}>Submit pick</button>
+      </div>
       <div class="error" id="draft-err"></div>
-    </div>` : ''}
+    </div>
+  `) + `
     <div class="card">
       <h2>Your picks so far</h2>
       <div class="row">${draftedByMe.length ? draftedByMe.map(t => `<span class="pill">${t}</span>`).join('') : '<span class="muted">None yet</span>'}</div>
@@ -192,15 +268,129 @@ async function renderHome() {
   `;
 
   app.querySelectorAll('.team-card[data-pickable="1"]').forEach(card => {
-    card.addEventListener('click', async () => {
-      const team = card.dataset.team;
-      const errEl = document.getElementById('draft-err');
-      try {
-        await api('/api/draft/pick', { method: 'POST', body: { team } });
-        renderHome();
-      } catch (e) { if (errEl) errEl.textContent = e.message; }
+    card.addEventListener('click', () => {
+      draftSelection = card.dataset.team;
+      renderDraftPage();
     });
   });
+
+  const submitBtn = document.getElementById('submit-draft-pick-btn');
+  if (submitBtn && !submitBtn.disabled) {
+    submitBtn.onclick = async () => {
+      const errEl = document.getElementById('draft-err');
+      try {
+        await api('/api/draft/pick', { method: 'POST', body: { team: draftSelection } });
+        draftSelection = null;
+        renderDraftPage();
+      } catch (e) { if (errEl) errEl.textContent = e.message; }
+    };
+  }
+}
+
+// ---------------- Draft mode: Players page ----------------
+async function renderPlayersPage() {
+  const state = await api('/api/state');
+  if (exitDraftModeIfOver(state)) return;
+
+  const n = state.draftOrder ? state.draftOrder.length : 0;
+  const totalPicks = n * state.rounds;
+  const draftDone = state.currentPickIndex >= totalPicks;
+
+  const nameById = {};
+  state.players.forEach(p => { nameById[p.id] = p.name; });
+
+  const byPlayer = {};
+  state.players.forEach(p => { byPlayer[p.id] = []; });
+  state.draftPicks.forEach(pk => { if (byPlayer[pk.player_id]) byPlayer[pk.player_id].push(pk.team); });
+
+  const rosterCards = state.players.map(p => `
+    <div class="card">
+      <h2>${p.name}${p.id === me.id ? ' <span class="pill gold" style="font-size:10px;">YOU</span>' : ''}</h2>
+      <div class="row">${byPlayer[p.id].length ? byPlayer[p.id].map(t => `<span class="pill">${t}</span>`).join('') : '<span class="muted">No picks yet</span>'}</div>
+    </div>
+  `).join('');
+
+  app.innerHTML = draftClockBarHtml(state, nameById, draftDone) + rosterCards;
+}
+
+// ---------------- Draft mode: Host page ----------------
+// The host is very likely drafting too, so the "end draft" controls need to
+// be reachable without ever leaving draft mode — this is a slimmed-down
+// version of the full Host tab, focused on just that.
+async function renderDraftHostPage() {
+  if (!hostPw) {
+    app.innerHTML = `
+      <div class="card" style="max-width:420px;margin:40px auto;">
+        <h2>Host login</h2>
+        <p class="muted">Enter the host password to access draft controls.</p>
+        <div class="field"><label>Host password</label><input id="host-pw" type="password" /></div>
+        <button class="btn secondary" id="host-login-btn">Unlock</button>
+        <div class="error" id="host-login-err"></div>
+      </div>
+    `;
+    document.getElementById('host-login-btn').onclick = async () => {
+      const pw = document.getElementById('host-pw').value;
+      const err = document.getElementById('host-login-err');
+      err.textContent = '';
+      try {
+        const headers = { 'Content-Type': 'application/json', 'x-host-password': pw };
+        const res = await fetch('/api/host/login', { method: 'POST', headers });
+        if (!res.ok) throw new Error((await res.json()).error || 'Wrong password');
+        hostPw = pw;
+        sessionStorage.setItem('gp_host', pw);
+        renderDraftHostPage();
+      } catch (e) { err.textContent = e.message; }
+    };
+    return;
+  }
+
+  const state = await api('/api/state');
+  if (exitDraftModeIfOver(state)) return;
+
+  const n = state.draftOrder ? state.draftOrder.length : 0;
+  const totalPicks = n * state.rounds;
+  const draftDone = state.currentPickIndex >= totalPicks;
+
+  app.innerHTML = `
+    <div class="card">
+      <h2>Draft host controls</h2>
+      <p class="muted">Phase: <b>${state.phase}</b> · pick ${Math.min(state.currentPickIndex + 1, totalPicks)} of ${totalPicks}${draftDone ? ' · all rounds complete' : ''}</p>
+    </div>
+    <div class="card">
+      <h2>End draft &amp; assign 17th team</h2>
+      <p class="muted">${draftDone ? "All rounds are done — pick the shared 17th team and start the season. This ends the draft for everyone and opens Week 1 picks." : 'Available once all rounds are complete.'}</p>
+      <div class="field"><label>17th team (shared / worst team)</label>
+        <select id="seventeenth-select" ${draftDone ? '' : 'disabled'}>${state.teams.map(t => `<option value="${t.abbr}">${t.abbr} — ${t.name}</option>`).join('')}</select>
+      </div>
+      <button class="btn" id="set-seventeenth-btn" ${draftDone ? '' : 'disabled'}>End draft &amp; start season</button>
+      <div class="error" id="draft-host-err"></div>
+      <div class="success" id="draft-host-ok"></div>
+    </div>
+  `;
+
+  const btn = document.getElementById('set-seventeenth-btn');
+  if (btn && !btn.disabled) {
+    btn.onclick = async () => {
+      const err = document.getElementById('draft-host-err');
+      const ok = document.getElementById('draft-host-ok');
+      const team = document.getElementById('seventeenth-select').value;
+      try {
+        await api('/api/host/set-seventeenth', { method: 'POST', asHost: true, body: { team } });
+        ok.textContent = `Season started with ${team} as the shared 17th team.`;
+        err.textContent = '';
+      } catch (e) { err.textContent = e.message; ok.textContent = ''; }
+    };
+  }
+}
+
+// Formats an ISO kickoff time in the viewer's local time zone, e.g. "Sun 9/14, 1:00 PM".
+function formatKickoff(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const weekday = d.toLocaleDateString(undefined, { weekday: 'short' });
+  const date = d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `${weekday} ${date}, ${time}`;
 }
 
 // ---------------- Weekly picks ----------------
@@ -212,28 +402,40 @@ async function renderPicks() {
   }
   const week = state.currentWeek;
   const data = await api(`/api/week/${week}`);
-
   const existing = data.existingPick;
+  const disabledAll = !!existing && (existing.locked || existing.change_used);
+  if (disabledAll) pickSelection = null;
+
   const rows = data.remainingTeams.map(t => {
     const o = t.odds;
     const spreadTxt = o ? (Number(o.spread) < 0 ? `Favored by ${Math.abs(o.spread)}` : `Underdog by ${o.spread}`) : 'Odds not posted yet';
     const kicked = o && o.commence_time && new Date(o.commence_time).getTime() <= Date.now();
     const isCurrent = existing && existing.team === t.team;
-    const disabled = !!existing && (existing.locked || existing.change_used || kicked) && !isCurrent;
+    const isSelected = pickSelection ? pickSelection === t.team : isCurrent;
+    const clickable = !disabledAll && !kicked;
     return `
-      <div class="team-card ${disabled ? 'disabled' : ''} ${isCurrent ? 'selected' : ''}" data-team="${t.team}" ${disabled ? '' : 'data-pickable="1"'}>
+      <div class="team-card ${!clickable ? 'disabled' : ''} ${isSelected ? 'selected' : ''}" data-team="${t.team}" ${clickable ? 'data-pickable="1"' : ''}>
         <div class="team-abbr">${t.team}${t.isSeventeenth ? ' <span class="pill gold" style="font-size:9px;">RISK-FREE</span>' : ''}</div>
         <div class="team-meta">${o ? `vs ${o.opponent}` : 'No matchup posted'}</div>
         <div class="team-meta">${spreadTxt}${kicked ? ' · KICKED OFF' : ''}</div>
+        ${o && o.commence_time ? `<div class="team-meta">${formatKickoff(o.commence_time)}</div>` : ''}
       </div>
     `;
   }).join('');
 
-  let statusHtml = '';
-  if (existing) {
-    statusHtml = `<p class="success">Current pick: <b>${existing.team}</b>${existing.auto_assigned ? ' (auto-assigned)' : ''}${existing.change_used ? ' · change already used' : data.canChange ? ' · you can change this once' : ''}</p>`;
-  } else {
+  let statusHtml, submitBtnHtml;
+  if (!existing) {
     statusHtml = `<p class="muted">No pick submitted yet for Week ${week}.</p>`;
+    submitBtnHtml = `<button class="btn" id="submit-pick-btn" ${pickSelection ? '' : 'disabled'}>Submit pick</button>`;
+  } else if (disabledAll) {
+    statusHtml = `<p class="success">Locked in: <b>${existing.team}</b>${existing.auto_assigned ? ' (auto-assigned)' : ''}${existing.change_used ? ' · change already used' : ''}</p>`;
+    submitBtnHtml = `<button class="btn" id="submit-pick-btn" disabled>${existing.change_used ? 'Change already used' : 'Locked in'}</button>`;
+  } else {
+    const changing = pickSelection && pickSelection !== existing.team;
+    statusHtml = changing
+      ? `<p class="muted">Current pick: <b>${existing.team}</b>. You can only change your pick <b>once</b> — submitting will lock in <b>${pickSelection}</b> and you won't be able to change it again this week.</p>`
+      : `<p class="success">Current pick: <b>${existing.team}</b> · you can change this once</p>`;
+    submitBtnHtml = `<button class="btn" id="submit-pick-btn" ${changing ? '' : 'disabled'}>${changing ? 'Confirm change' : 'Submit pick'}</button>`;
   }
 
   app.innerHTML = `
@@ -241,48 +443,205 @@ async function renderPicks() {
       <h2>Week ${week} picks</h2>
       ${statusHtml}
       <div class="team-grid">${rows || '<p class="muted">No roster teams left to pick — all used.</p>'}</div>
+      <div class="row" style="margin-top:14px;">${submitBtnHtml}</div>
       <div class="error" id="pick-err"></div>
     </div>
   `;
 
   app.querySelectorAll('.team-card[data-pickable="1"]').forEach(card => {
-    card.addEventListener('click', async () => {
-      const team = card.dataset.team;
-      if (existing && !confirm('You can only change your pick once this week, and not after that team kicks off. Continue?')) return;
-      const errEl = document.getElementById('pick-err');
-      try {
-        await api('/api/picks', { method: 'POST', body: { week, team } });
-        renderPicks();
-      } catch (e) { errEl.textContent = e.message; }
+    card.addEventListener('click', () => {
+      pickSelection = card.dataset.team;
+      renderPicks();
     });
   });
+
+  const submitBtn = document.getElementById('submit-pick-btn');
+  if (submitBtn && !submitBtn.disabled) {
+    submitBtn.onclick = async () => {
+      const errEl = document.getElementById('pick-err');
+      try {
+        await api('/api/picks', { method: 'POST', body: { week, team: pickSelection } });
+        pickSelection = null;
+        renderPicks();
+      } catch (e) { errEl.textContent = e.message; }
+    };
+  }
 }
 
 // ---------------- Scoreboard ----------------
 async function renderScoreboard() {
   const board = await api('/api/scoreboard');
-  const rows = board.map(e => `
-    <tr class="${e.playerId === me.id ? 'me' : ''}">
-      <td class="num">${e.rank}</td>
-      <td>${e.name}</td>
-      <td class="num">${e.total.toFixed(2)}</td>
-      <td class="num">${e.currentStreak >= 2 ? `<span class="pill loss">${e.currentStreak}-loss streak</span>` : '—'}</td>
-    </tr>
-  `).join('');
+  const subnavHtml = `
+    <div class="row" style="margin-bottom:16px;">
+      <button class="btn ${scoreboardSubTab === 'overview' ? '' : 'secondary'}" data-sb="overview">Overview</button>
+      <button class="btn ${scoreboardSubTab === 'history' ? '' : 'secondary'}" data-sb="history">History</button>
+      <button class="btn ${scoreboardSubTab === 'analytics' ? '' : 'secondary'}" data-sb="analytics">Analytics</button>
+    </div>
+  `;
+  if (scoreboardSubTab === 'history') renderScoreboardHistory(board, subnavHtml);
+  else if (scoreboardSubTab === 'analytics') renderScoreboardAnalytics(board, subnavHtml);
+  else renderScoreboardOverview(board, subnavHtml);
+}
+
+function bindScoreboardSubnav() {
+  app.querySelectorAll('[data-sb]').forEach(btn => {
+    btn.onclick = () => { scoreboardSubTab = btn.dataset.sb; renderScoreboard(); };
+  });
+}
+
+function renderScoreboardOverview(board, subnavHtml) {
+  const rows = board.map(e => {
+    const lw = e.lastWeekPoints;
+    const lwHtml = lw == null
+      ? '<span class="muted">—</span>'
+      : `<span class="pill ${lw > 0 ? 'win' : lw < 0 ? 'loss' : ''}">${lw > 0 ? '+' : ''}${lw}</span>`;
+    return `
+      <tr class="${e.playerId === me.id ? 'me' : ''}">
+        <td class="num">${e.rank}</td>
+        <td>${e.name}</td>
+        <td class="num">${e.total.toFixed(2)}</td>
+        <td class="num">${lwHtml}</td>
+        <td class="num">${e.currentStreak >= 2 ? `<span class="pill loss">${e.currentStreak}-loss streak</span>` : '—'}</td>
+      </tr>
+    `;
+  }).join('');
   app.innerHTML = `
     <div class="card">
       <h2>Scoreboard</h2>
+      ${subnavHtml}
       <table>
-        <thead><tr><th>Rank</th><th>Player</th><th>Points</th><th>Streak</th></tr></thead>
+        <thead><tr><th>Rank</th><th>Player</th><th>Points</th><th>Last Week</th><th>Streak</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
   `;
+  bindScoreboardSubnav();
+}
+
+function renderScoreboardHistory(board, subnavHtml) {
+  const options = ['<option value="all">All players</option>']
+    .concat(board.map(e => `<option value="${e.playerId}">${e.name}</option>`)).join('');
+
+  const filtered = scoreboardHistoryFilter === 'all'
+    ? board
+    : board.filter(e => String(e.playerId) === String(scoreboardHistoryFilter));
+
+  const flatRows = [];
+  filtered.forEach(e => { e.rows.forEach(r => flatRows.push({ name: e.name, ...r })); });
+  flatRows.sort((a, b) => a.week - b.week || a.name.localeCompare(b.name));
+
+  const rowsHtml = flatRows.map(r => `
+    <tr>
+      <td>${r.name}</td>
+      <td class="num">${r.week}</td>
+      <td>${r.team}</td>
+      <td>${r.status === 'pending' ? '<span class="muted">Pending</span>' : r.status === 'W' ? '<span class="pill win">W</span>' : '<span class="pill loss">L</span>'}</td>
+      <td>${r.matchupType}</td>
+      <td class="num">${r.status === 'pending' ? '—' : (r.points > 0 ? '+' : '') + r.points}</td>
+    </tr>
+  `).join('');
+
+  app.innerHTML = `
+    <div class="card">
+      <h2>Scoreboard</h2>
+      ${subnavHtml}
+      <div class="field" style="max-width:240px;">
+        <label>Filter by player</label>
+        <select id="history-filter">${options}</select>
+      </div>
+      <table>
+        <thead><tr><th>Player</th><th>Week</th><th>Team</th><th>Result</th><th>Matchup</th><th>Points</th></tr></thead>
+        <tbody>${rowsHtml || '<tr><td colspan="6" class="muted">No picks yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+  const sel = document.getElementById('history-filter');
+  sel.value = scoreboardHistoryFilter;
+  sel.onchange = (e) => { scoreboardHistoryFilter = e.target.value; renderScoreboardHistory(board, subnavHtml); };
+  bindScoreboardSubnav();
+}
+
+function renderScoreboardAnalytics(board, subnavHtml) {
+  const weekSet = new Set();
+  board.forEach(e => e.rows.forEach(r => { if (r.status !== 'pending') weekSet.add(r.week); }));
+  const weeks = [...weekSet].sort((a, b) => a - b);
+
+  const checkboxesHtml = board.map(e => `
+    <label class="pill" style="cursor:pointer;">
+      <input type="checkbox" class="analytics-player-cb" data-pid="${e.playerId}" checked style="margin-right:4px;vertical-align:middle;" />${e.name}
+    </label>
+  `).join(' ');
+
+  app.innerHTML = `
+    <div class="card">
+      <h2>Scoreboard</h2>
+      ${subnavHtml}
+      <p class="muted">Cumulative points at the end of each week. Toggle players below.</p>
+      <div class="row" style="margin-bottom:14px;">${checkboxesHtml}</div>
+      ${weeks.length ? '<canvas id="analytics-chart" height="110"></canvas>' : '<p class="muted">No resolved weeks yet — the chart fills in once results start coming in.</p>'}
+    </div>
+  `;
+  bindScoreboardSubnav();
+  if (!weeks.length) return;
+
+  const palette = ['#E8B94A', '#4A9B7F', '#C2493D', '#6E9BC2', '#B084CC', '#D98E4A', '#5FBF9F', '#E36F9E'];
+  const datasets = board.map((e, i) => {
+    let running = 0;
+    const byWeek = {};
+    e.rows.filter(r => r.status !== 'pending').forEach(r => { byWeek[r.week] = r.points; });
+    const data = weeks.map(w => {
+      if (byWeek[w] !== undefined) running += byWeek[w];
+      return Math.round(running * 100) / 100;
+    });
+    const color = palette[i % palette.length];
+    return {
+      label: e.name,
+      data,
+      borderColor: color,
+      backgroundColor: color,
+      tension: 0.25,
+      pointRadius: 3,
+      datalabels: {
+        color,
+        align: i % 2 === 0 ? 'top' : 'bottom',
+        offset: 4 + (i % 3) * 3,
+        font: { size: 10, weight: '500' },
+        formatter: v => v,
+      },
+    };
+  });
+
+  function draw() {
+    const checked = new Set([...app.querySelectorAll('.analytics-player-cb:checked')].map(cb => cb.dataset.pid));
+    const visibleDatasets = datasets.filter((d, i) => checked.has(String(board[i].playerId)));
+    if (window._analyticsChart) window._analyticsChart.destroy();
+    const ctx = document.getElementById('analytics-chart').getContext('2d');
+    window._analyticsChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: weeks.map(w => `Wk ${w}`), datasets: visibleDatasets },
+      plugins: [ChartDataLabels],
+      options: {
+        responsive: true,
+        layout: { padding: { top: 20, bottom: 10 } },
+        plugins: {
+          legend: {
+            position: 'top',
+            labels: { color: '#EDEAE3', boxWidth: 12, font: { size: 12 } },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#8AA098' }, grid: { color: '#263731' } },
+          y: { ticks: { color: '#8AA098' }, grid: { color: '#263731' } },
+        },
+      },
+    });
+  }
+  draw();
+  app.querySelectorAll('.analytics-player-cb').forEach(cb => cb.onchange = draw);
 }
 
 // ---------------- Host admin ----------------
 async function renderHostAdmin() {
-  // Gate: show nothing but the password box until it's unlocked.
   if (!hostPw) {
     app.innerHTML = `
       <div class="card" style="max-width:420px;margin:40px auto;">
@@ -314,7 +673,6 @@ async function renderHostAdmin() {
   try {
     pendingRequests = await api('/api/join-requests', { asHost: true });
   } catch (e) {
-    // Stored password no longer valid — drop back to the login gate.
     hostPw = null;
     sessionStorage.removeItem('gp_host');
     renderHostAdmin();
