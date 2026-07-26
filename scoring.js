@@ -58,11 +58,14 @@ function computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam)
   return { total, rows, currentStreak: streak };
 }
 
-function computeScoreboard(players, picksByPlayer, oddsByWeek, resultsByWeek, seventeenthTeam) {
+function computeScoreboard(players, picksByPlayer, oddsByWeek, resultsByWeek, seventeenthTeam, lastWeek) {
   const entries = players.map(p => {
     const picks = picksByPlayer[p.id] || [];
     const { total, rows, currentStreak } = computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam);
-    return { playerId: p.id, name: p.name, total: Math.round(total * 100) / 100, rows, currentStreak };
+    const lastWeekRow = lastWeek != null ? rows.find(r => r.week === lastWeek) : null;
+    // null means "no resolved pick that week" (bye, missed, or not yet decided) — the client shows this as a dash rather than 0.
+    const lastWeekPoints = lastWeekRow && lastWeekRow.status !== 'pending' ? lastWeekRow.points : null;
+    return { playerId: p.id, name: p.name, total: Math.round(total * 100) / 100, rows, currentStreak, lastWeekPoints };
   });
 
   entries.sort((a, b) => b.total - a.total);
