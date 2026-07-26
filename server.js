@@ -251,13 +251,32 @@ app.get('/api/week/:week', requirePlayer, async (req, res) => {
   const oddsMap = {};
   odds.forEach(o => { oddsMap[o.team] = o; });
 
-  const remaining = roster.filter(t => !usedPreviously.includes(t)).map(t => ({
-    team: t,
-    isSeventeenth: t === cfg.seventeenth_team,
-    odds: oddsMap[t] || null,
-  }));
-
   const existing = (await pool.query('SELECT * FROM player_picks WHERE player_id=$1 AND week=$2', [req.player.id, week])).rows[0] || null;
+
+  // A team with no odds row this week has a bye — don't offer it as a pick.
+  // A team whose game has already kicked off is also pulled from the list
+  // entirely (not just disabled) so it's not sitting there as a dead option.
+  // The one exception to both: if it's already this week's locked-in pick,
+  // keep showing it so the player can see their own pick's status. In
+  // practice that exception can basically never fire — you can only ever
+  // lock in a pick from teams that were already in this list, so by the
+  // time its game kicks off it's already excluded from anything BUT this
+  // check. It's here purely as a safety net for a game getting pulled or
+  // rescheduled by the odds provider after the pick was made.
+  const remaining = roster
+    .filter(t => !usedPreviously.includes(t))
+    .filter(t => {
+      const isExistingPick = existing && existing.team === t;
+      const o = oddsMap[t];
+      if (!o) return isExistingPick; // bye week
+      const kicked = o.commence_time && new Date(o.commence_time).getTime() <= Date.now();
+      return !kicked || isExistingPick;
+    })
+    .map(t => ({
+      team: t,
+      isSeventeenth: t === cfg.seventeenth_team,
+      odds: oddsMap[t] || null,
+    }));
 
   let canChange = false;
   if (existing && !existing.locked && !existing.change_used) {
@@ -385,7 +404,7 @@ app.post('/api/host/advance-week', requireHost, async (req, res) => {
 // ---------- scoreboard ----------
 app.get('/api/scoreboard', async (req, res) => {
   const players = (await pool.query('SELECT id, name FROM players ORDER BY id')).rows;
-  const cfg = (await pool.query('SELECT seventeenth_team FROM config WHERE id=1')).rows[0];
+  const cfg = (await pool.query('SELECT seventeenth_team, current_week FROM config WHERE id=1')).rows[0];
 
   const picks = (await pool.query('SELECT player_id, week, team FROM player_picks')).rows;
   const picksByPlayer = {};
@@ -408,7 +427,7 @@ app.get('/api/scoreboard', async (req, res) => {
     resultsByWeek[r.week][r.team] = r.result;
   });
 
-  const board = computeScoreboard(players, picksByPlayer, oddsByWeek, resultsByWeek, cfg.seventeenth_team);
+  const board = computeScoreboard(players, picksByPlayer, oddsByWeek, resultsByWeek, cfg.seventeenth_team, cfg.current_week > 1 ? cfg.current_week - 1 : null);
   res.json(board);
 });
 
