@@ -189,15 +189,24 @@ async function renderHome() {
 }
 
 // ---------------- Draft mode: shared clock bar ----------------
+function lastPickHtml(state, nameById) {
+  if (!state.draftPicks || !state.draftPicks.length) return '';
+  const last = state.draftPicks[state.draftPicks.length - 1];
+  const name = nameById[last.player_id] || '?';
+  return `<div class="card"><h2>Last pick</h2><p class="muted" style="margin:0;"><b>${name}</b> took <b>${last.team}</b></p></div>`;
+}
+
 function draftClockBarHtml(state, nameById, draftDone) {
+  const lastPick = lastPickHtml(state, nameById);
   if (draftDone) {
-    return `<div class="card"><h2>Draft status</h2><p class="muted">All ${state.rounds} rounds are done. Waiting on the host to assign the shared 17th team.</p></div>`;
+    return `${lastPick}<div class="card"><h2>Draft status</h2><p class="muted">All ${state.rounds} rounds are done. Waiting on the host to assign the shared 17th team.</p></div>`;
   }
-  if (!state.pickDeadline) return '';
+  if (!state.pickDeadline) return lastPick;
   const n = state.draftOrder.length;
   const secsLeft = Math.max(0, Math.round((new Date(state.pickDeadline).getTime() - Date.now()) / 1000));
   const turnName = nameById[state.currentTurnPlayerId] || '?';
   return `
+    ${lastPick}
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center;">
         <div><span class="muted">On the clock:</span> <b>${turnName}</b>${state.currentTurnPlayerId === me.id ? ' <span class="pill gold">YOU</span>' : ''}</div>
@@ -383,14 +392,50 @@ async function renderDraftHostPage() {
   }
 }
 
-// Formats an ISO kickoff time in the viewer's local time zone, e.g. "Sun 9/14, 1:00 PM".
+// Formats an ISO kickoff time in Eastern Time (the app's canonical time zone), e.g. "Sun 9/14, 1:00 PM ET".
 function formatKickoff(iso) {
   if (!iso) return null;
   const d = new Date(iso);
-  const weekday = d.toLocaleDateString(undefined, { weekday: 'short' });
-  const date = d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
-  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  return `${weekday} ${date}, ${time}`;
+  const weekday = d.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/New_York' });
+  const date = d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', timeZone: 'America/New_York' });
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
+  return `${weekday} ${date}, ${time} ET`;
+}
+
+// Days/hours/minutes remaining until kickoff. Returns null once it's kicked off.
+function formatCountdown(iso) {
+  if (!iso) return null;
+  const diffMs = new Date(iso).getTime() - Date.now();
+  if (diffMs <= 0) return null;
+  const totalMin = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMin / 1440);
+  const hours = Math.floor((totalMin % 1440) / 60);
+  const mins = totalMin % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (days || hours) parts.push(`${hours}h`);
+  parts.push(`${mins}m`);
+  return `Kicks off in ${parts.join(' ')}`;
+}
+
+// Splits a player's remaining-team options into favorite/even/upset columns
+// (plus a trailing bucket for byes or games with no odds posted yet), sorted
+// within each column by kickoff time ascending, then spread descending.
+function groupPickOptions(teams) {
+  const groups = { favorite: [], even: [], upset: [], other: [] };
+  teams.forEach(t => {
+    (groups[t.matchupType] || groups.other).push(t);
+  });
+  const cmp = (a, b) => {
+    const at = a.odds && a.odds.commence_time ? new Date(a.odds.commence_time).getTime() : Infinity;
+    const bt = b.odds && b.odds.commence_time ? new Date(b.odds.commence_time).getTime() : Infinity;
+    if (at !== bt) return at - bt;
+    const as = a.odds ? Number(a.odds.spread) : 0;
+    const bs = b.odds ? Number(b.odds.spread) : 0;
+    return bs - as;
+  };
+  Object.values(groups).forEach(g => g.sort(cmp));
+  return groups;
 }
 
 // ---------------- Weekly picks ----------------
@@ -406,22 +451,49 @@ async function renderPicks() {
   const disabledAll = !!existing && (existing.locked || existing.change_used);
   if (disabledAll) pickSelection = null;
 
-  const rows = data.remainingTeams.map(t => {
+  function pointsPillsHtml(t) {
+    const correct = `<span class="pill win">+${t.correctPoints}</span>`;
+    const incorrect = t.incorrectPoints < 0
+      ? `<span class="pill loss">${t.incorrectPoints}</span>`
+      : `<span class="pill">${t.incorrectPoints}</span>`;
+    return `<div class="row" style="gap:6px;margin-top:6px;">${correct}${incorrect}</div>`;
+  }
+
+  function cardHtml(t) {
     const o = t.odds;
-    const spreadTxt = o ? (Number(o.spread) < 0 ? `Favored by ${Math.abs(o.spread)}` : `Underdog by ${o.spread}`) : 'Odds not posted yet';
-    const kicked = o && o.commence_time && new Date(o.commence_time).getTime() <= Date.now();
+    const spreadTxt = o ? (Number(o.spread) < 0 ? `Favored by ${Math.abs(o.spread)}` : `Underdog by ${o.spread}`) : (t.bye ? 'Bye week' : 'Odds not posted yet');
     const isCurrent = existing && existing.team === t.team;
     const isSelected = pickSelection ? pickSelection === t.team : isCurrent;
-    const clickable = !disabledAll && !kicked;
+    const clickable = !disabledAll && t.available;
+    const countdown = o && !t.kicked ? formatCountdown(o.commence_time) : null;
     return `
       <div class="team-card ${!clickable ? 'disabled' : ''} ${isSelected ? 'selected' : ''}" data-team="${t.team}" ${clickable ? 'data-pickable="1"' : ''}>
         <div class="team-abbr">${t.team}${t.isSeventeenth ? ' <span class="pill gold" style="font-size:9px;">RISK-FREE</span>' : ''}</div>
-        <div class="team-meta">${o ? `vs ${o.opponent}` : 'No matchup posted'}</div>
-        <div class="team-meta">${spreadTxt}${kicked ? ' · KICKED OFF' : ''}</div>
+        <div class="team-meta">${o ? `vs ${o.opponent}` : (t.bye ? 'No game this week' : 'No matchup posted')}</div>
+        <div class="team-meta">${spreadTxt}${t.kicked ? ' · KICKED OFF' : ''}</div>
         ${o && o.commence_time ? `<div class="team-meta">${formatKickoff(o.commence_time)}</div>` : ''}
+        ${countdown ? `<div class="team-meta">${countdown}</div>` : ''}
+        ${pointsPillsHtml(t)}
       </div>
     `;
-  }).join('');
+  }
+
+  const groups = groupPickOptions(data.remainingTeams);
+  const columns = [
+    { label: 'Favorites', items: groups.favorite },
+    { label: 'Even', items: groups.even },
+    { label: 'Upsets', items: groups.upset },
+    { label: 'Bye / TBD', items: groups.other },
+  ].filter(c => c.items.length);
+
+  const columnsHtml = columns.length
+    ? `<div style="display:flex;gap:0;">${columns.map((c, i) => `
+        <div style="flex:1;min-width:0;padding:0 14px;${i > 0 ? 'border-left:1px solid var(--line);' : ''}">
+          <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">${c.label}</div>
+          <div style="display:flex;flex-direction:column;gap:10px;">${c.items.map(cardHtml).join('')}</div>
+        </div>
+      `).join('')}</div>`
+    : '<p class="muted">No roster teams left to pick — all used.</p>';
 
   let statusHtml, submitBtnHtml;
   if (!existing) {
@@ -442,7 +514,7 @@ async function renderPicks() {
     <div class="card">
       <h2>Week ${week} picks</h2>
       ${statusHtml}
-      <div class="team-grid">${rows || '<p class="muted">No roster teams left to pick — all used.</p>'}</div>
+      ${columnsHtml}
       <div class="row" style="margin-top:14px;">${submitBtnHtml}</div>
       <div class="error" id="pick-err"></div>
     </div>
