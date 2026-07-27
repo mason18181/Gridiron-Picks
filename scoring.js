@@ -80,4 +80,4 @@ function computeScoreboard(players, picksByPlayer, oddsByWeek, resultsByWeek, se
   return entries;
 }
 
-module.exports = { computeScoreboard, computePlayerHistory, matchupType };
+module.exports = { computeScoreboard, computePlayerHistory, matchupType, pointsForWin };
