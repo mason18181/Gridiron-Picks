@@ -5,7 +5,7 @@ const cron = require('node-cron');
 const { pool, initSchema } = require('./db');
 const { TEAMS } = require('./teams');
 const { syncWeekOdds, syncWeekResults } = require('./odds');
-const { computeScoreboard } = require('./scoring');
+const { computeScoreboard, computePlayerHistory, matchupType, pointsForWin } = require('./scoring');
 
 const app = express();
 app.use(express.json());
@@ -231,6 +231,21 @@ app.post('/api/host/set-seventeenth', requireHost, async (req, res) => {
   res.json({ ok: true });
 });
 
+async function getCurrentStreakForPlayer(playerId, beforeWeek, seventeenthTeam) {
+  const picks = (await pool.query(
+    'SELECT week, team FROM player_picks WHERE player_id=$1 AND week < $2 ORDER BY week', [playerId, beforeWeek]
+  )).rows;
+  if (!picks.length) return 0;
+  const weeks = [...new Set(picks.map(p => p.week))];
+  const oddsRows = (await pool.query('SELECT week, team, spread FROM weekly_odds WHERE week = ANY($1)', [weeks])).rows;
+  const resultRows = (await pool.query('SELECT week, team, result FROM weekly_results WHERE week = ANY($1)', [weeks])).rows;
+  const oddsByWeek = {};
+  oddsRows.forEach(o => { if (!oddsByWeek[o.week]) oddsByWeek[o.week] = {}; oddsByWeek[o.week][o.team] = o; });
+  const resultsByWeek = {};
+  resultRows.forEach(r => { if (!resultsByWeek[r.week]) resultsByWeek[r.week] = {}; resultsByWeek[r.week][r.team] = r.result; });
+  return computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam).currentStreak;
+}
+
 // ---------- weekly picks ----------
 async function rosterFor(playerId, seventeenthTeam) {
   const drafted = (await pool.query('SELECT team FROM draft_picks WHERE player_id=$1', [playerId])).rows.map(r => r.team);
@@ -250,33 +265,38 @@ app.get('/api/week/:week', requirePlayer, async (req, res) => {
   const odds = (await pool.query('SELECT team, opponent, spread, commence_time FROM weekly_odds WHERE week=$1', [week])).rows;
   const oddsMap = {};
   odds.forEach(o => { oddsMap[o.team] = o; });
+  const weekHasOdds = odds.length > 0;
 
   const existing = (await pool.query('SELECT * FROM player_picks WHERE player_id=$1 AND week=$2', [req.player.id, week])).rows[0] || null;
 
-  // A team with no odds row this week has a bye — don't offer it as a pick.
-  // A team whose game has already kicked off is also pulled from the list
-  // entirely (not just disabled) so it's not sitting there as a dead option.
-  // The one exception to both: if it's already this week's locked-in pick,
-  // keep showing it so the player can see their own pick's status. In
-  // practice that exception can basically never fire — you can only ever
-  // lock in a pick from teams that were already in this list, so by the
-  // time its game kicks off it's already excluded from anything BUT this
-  // check. It's here purely as a safety net for a game getting pulled or
-  // rescheduled by the odds provider after the pick was made.
+  const currentStreak = await getCurrentStreakForPlayer(req.player.id, week, cfg.seventeenth_team);
+
+  // Every remaining roster team is shown, even ones you can't actually pick
+  // right now (bye week, or the game already kicked off) — those just come
+  // back flagged as unavailable so the client can gray them out instead of
+  // making them disappear.
   const remaining = roster
     .filter(t => !usedPreviously.includes(t))
-    .filter(t => {
-      const isExistingPick = existing && existing.team === t;
-      const o = oddsMap[t];
-      if (!o) return isExistingPick; // bye week
-      const kicked = o.commence_time && new Date(o.commence_time).getTime() <= Date.now();
-      return !kicked || isExistingPick;
-    })
-    .map(t => ({
-      team: t,
-      isSeventeenth: t === cfg.seventeenth_team,
-      odds: oddsMap[t] || null,
-    }));
+    .map(t => {
+      const o = oddsMap[t] || null;
+      const isSeventeenth = t === cfg.seventeenth_team;
+      const kicked = !!(o && o.commence_time && new Date(o.commence_time).getTime() <= Date.now());
+      const bye = !o && weekHasOdds;
+      const type = o ? matchupType(o.spread) : 'unknown';
+      const correctPoints = pointsForWin(type);
+      const incorrectPoints = isSeventeenth ? 0 : (currentStreak + 1 >= 2 ? -1 : (type === 'favorite' ? -0.5 : 0));
+      return {
+        team: t,
+        isSeventeenth,
+        odds: o,
+        kicked,
+        bye,
+        matchupType: type,
+        correctPoints,
+        incorrectPoints,
+        available: !kicked && !bye,
+      };
+    });
 
   let canChange = false;
   if (existing && !existing.locked && !existing.change_used) {
@@ -284,7 +304,7 @@ app.get('/api/week/:week', requirePlayer, async (req, res) => {
     canChange = !o || !o.commence_time || new Date(o.commence_time).getTime() > Date.now();
   }
 
-  res.json({ week, remainingTeams: remaining, existingPick: existing, canChange });
+  res.json({ week, remainingTeams: remaining, existingPick: existing, canChange, weekHasOdds });
 });
 
 app.post('/api/picks', requirePlayer, async (req, res) => {
@@ -303,6 +323,12 @@ app.post('/api/picks', requirePlayer, async (req, res) => {
   const oddsRow = (await pool.query('SELECT commence_time FROM weekly_odds WHERE week=$1 AND team=$2', [week, team])).rows[0];
   if (oddsRow && oddsRow.commence_time && new Date(oddsRow.commence_time).getTime() <= Date.now()) {
     return res.status(400).json({ error: 'That game has already kicked off' });
+  }
+  if (!oddsRow) {
+    const weekOddsCount = (await pool.query('SELECT count(*) c FROM weekly_odds WHERE week=$1', [week])).rows[0];
+    if (Number(weekOddsCount.c) > 0) {
+      return res.status(400).json({ error: 'That team has a bye this week' });
+    }
   }
 
   const existing = (await pool.query('SELECT * FROM player_picks WHERE player_id=$1 AND week=$2', [req.player.id, week])).rows[0];
