@@ -122,6 +122,7 @@ app.get('/api/state', async (req, res) => {
     draftOrder: cfg.draft_order,
     currentPickIndex: cfg.current_pick_index,
     pickDeadline: cfg.pick_deadline,
+    draftPaused: cfg.draft_paused,
     rounds: cfg.rounds,
     currentTurnPlayerId,
     lastAutoRun: cfg.last_auto_run,
@@ -147,6 +148,58 @@ app.post('/api/host/start-draft', requireHost, async (req, res) => {
     [ids, teamCap]
   );
   res.json({ ok: true, draftOrder: ids, teamCap });
+});
+
+app.post('/api/host/pause-draft', requireHost, async (req, res) => {
+  const cfg = (await pool.query('SELECT phase FROM config WHERE id=1')).rows[0];
+  if (cfg.phase !== 'draft') return res.status(400).json({ error: 'Draft is not active' });
+  await pool.query('UPDATE config SET draft_paused=true WHERE id=1');
+  res.json({ ok: true });
+});
+
+app.post('/api/host/resume-draft', requireHost, async (req, res) => {
+  const cfg = (await pool.query('SELECT phase FROM config WHERE id=1')).rows[0];
+  if (cfg.phase !== 'draft') return res.status(400).json({ error: 'Draft is not active' });
+  // A fresh 30s window on resume, regardless of how long the pause lasted —
+  // simpler and fairer than trying to preserve exactly how much time was
+  // left when it was paused.
+  await pool.query(`UPDATE config SET draft_paused=false, pick_deadline = now() + interval '30 seconds' WHERE id=1`);
+  res.json({ ok: true });
+});
+
+// Re-randomizes order and wipes all picks, but keeps the draft itself
+// running (same as freshly starting it) — for when a draft needs a redo
+// without going all the way back to the lobby.
+app.post('/api/host/restart-draft', requireHost, async (req, res) => {
+  const cfg = (await pool.query('SELECT phase FROM config WHERE id=1')).rows[0];
+  if (cfg.phase !== 'draft') return res.status(400).json({ error: 'Draft is not active' });
+  const players = (await pool.query('SELECT id FROM players ORDER BY id')).rows;
+  const ids = players.map(p => p.id);
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  const teamCap = Math.floor((2 / 3) * ids.length);
+  await pool.query('DELETE FROM draft_picks');
+  await pool.query(
+    `UPDATE config SET draft_order=$1, team_cap=$2, current_pick_index=0, draft_paused=false,
+     pick_deadline = now() + interval '30 seconds' WHERE id=1`,
+    [ids, teamCap]
+  );
+  res.json({ ok: true, draftOrder: ids, teamCap });
+});
+
+// Abandons the draft entirely and returns to the lobby — for an
+// accidental start, or wanting to let more players join first. Same
+// action whether triggered from inside the live draft or the main Host
+// tab.
+app.post('/api/host/discard-draft', requireHost, async (req, res) => {
+  await pool.query('DELETE FROM draft_picks');
+  await pool.query(
+    `UPDATE config SET phase='lobby', draft_order='{}', team_cap=0, current_pick_index=0,
+     pick_deadline=NULL, draft_paused=false WHERE id=1`
+  );
+  res.json({ ok: true });
 });
 
 function computeTurn(cfg) {
@@ -184,6 +237,7 @@ app.post('/api/draft/pick', requirePlayer, async (req, res) => {
   const { team } = req.body;
   const cfg = (await pool.query('SELECT * FROM config WHERE id=1')).rows[0];
   if (cfg.phase !== 'draft') return res.status(400).json({ error: 'Draft is not active' });
+  if (cfg.draft_paused) return res.status(400).json({ error: 'The draft is paused — wait for the host to resume it' });
   const turnPlayerId = computeTurn(cfg);
   if (turnPlayerId !== req.player.id) return res.status(400).json({ error: "It's not your turn" });
 
@@ -202,7 +256,7 @@ app.post('/api/draft/pick', requirePlayer, async (req, res) => {
 // clock has actually run out, so it's safe to call repeatedly/concurrently.
 app.post('/api/draft/auto-check', async (req, res) => {
   const cfg = (await pool.query('SELECT * FROM config WHERE id=1')).rows[0];
-  if (cfg.phase !== 'draft' || !cfg.pick_deadline) return res.json({ acted: false });
+  if (cfg.phase !== 'draft' || !cfg.pick_deadline || cfg.draft_paused) return res.json({ acted: false });
   if (new Date(cfg.pick_deadline).getTime() > Date.now()) return res.json({ acted: false });
 
   const turnPlayerId = computeTurn(cfg);
