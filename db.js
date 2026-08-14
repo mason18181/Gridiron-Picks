@@ -27,10 +27,12 @@ async function initSchema() {
       current_pick_index INT NOT NULL DEFAULT 0,
       pick_deadline TIMESTAMPTZ,
       rounds INT NOT NULL DEFAULT 16,
-      last_auto_run DATE
+      last_auto_run DATE,
+      draft_paused BOOLEAN NOT NULL DEFAULT false
     );
     INSERT INTO config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
     ALTER TABLE config ADD COLUMN IF NOT EXISTS last_auto_run DATE;
+    ALTER TABLE config ADD COLUMN IF NOT EXISTS draft_paused BOOLEAN NOT NULL DEFAULT false;
 
     CREATE TABLE IF NOT EXISTS join_requests (
       id SERIAL PRIMARY KEY,
