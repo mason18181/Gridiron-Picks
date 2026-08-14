@@ -80,9 +80,9 @@ function renderTab() {
   clearInterval(pollTimer);
 
   if (draftMode) {
-    if (draftSubTab === 'players') { renderPlayersPage(); pollTimer = setInterval(renderPlayersPage, 2000); }
+    if (draftSubTab === 'players') { renderPlayersPage(); pollTimer = setInterval(renderPlayersPage, 1000); }
     else if (draftSubTab === 'host') { renderDraftHostPage(); pollTimer = setInterval(renderDraftHostPage, 3000); }
-    else { renderDraftPage(); pollTimer = setInterval(renderDraftPage, 2000); }
+    else { renderDraftPage(); pollTimer = setInterval(renderDraftPage, 1000); }
     return;
   }
 
@@ -203,8 +203,20 @@ function draftClockBarHtml(state, nameById, draftDone) {
   }
   if (!state.pickDeadline) return lastPick;
   const n = state.draftOrder.length;
-  const secsLeft = Math.max(0, Math.round((new Date(state.pickDeadline).getTime() - Date.now()) / 1000));
   const turnName = nameById[state.currentTurnPlayerId] || '?';
+  if (state.draftPaused) {
+    return `
+      ${lastPick}
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;">
+          <div><span class="muted">On the clock:</span> <b>${turnName}</b>${state.currentTurnPlayerId === me.id ? ' <span class="pill gold">YOU</span>' : ''}</div>
+          <div class="timer" style="color:var(--muted);">PAUSED</div>
+        </div>
+        <p class="muted" style="margin:8px 0 0;">Round ${Math.floor(state.currentPickIndex / n) + 1} of ${state.rounds} · Pick ${state.currentPickIndex + 1} of ${n * state.rounds} · the host has paused the draft</p>
+      </div>
+    `;
+  }
+  const secsLeft = Math.max(0, Math.round((new Date(state.pickDeadline).getTime() - Date.now()) / 1000));
   return `
     ${lastPick}
     <div class="card">
@@ -240,7 +252,7 @@ async function renderDraftPage() {
   const nameById = {};
   state.players.forEach(p => { nameById[p.id] = p.name; });
 
-  const myTurn = !draftDone && state.currentTurnPlayerId === me.id;
+  const myTurn = !draftDone && !state.draftPaused && state.currentTurnPlayerId === me.id;
   if (!myTurn) draftSelection = null; // clear any stale selection once it's not your turn
 
   const draftedByMe = state.draftPicks.filter(p => p.player_id === me.id).map(p => p.team);
@@ -262,7 +274,7 @@ async function renderDraftPage() {
   app.innerHTML = draftClockBarHtml(state, nameById, draftDone) + (draftDone ? '' : `
     <div class="card">
       <h2>Team bank</h2>
-      <p class="muted">${myTurn ? (draftSelection ? `Selected <b>${draftSelection}</b> — click Submit to confirm.` : 'Your pick — click a team, then submit.') : 'Waiting for your turn.'}</p>
+      <p class="muted">${state.draftPaused ? 'The draft is paused — hang tight.' : (myTurn ? (draftSelection ? `Selected <b>${draftSelection}</b> — click Submit to confirm.` : 'Your pick — click a team, then submit.') : 'Waiting for your turn.')}</p>
       <div class="team-grid">${teamGrid}</div>
       <div class="row" style="margin-top:14px;">
         <button class="btn" id="submit-draft-pick-btn" ${myTurn && draftSelection ? '' : 'disabled'}>Submit pick</button>
@@ -328,6 +340,10 @@ async function renderPlayersPage() {
 // version of the full Host tab, focused on just that.
 async function renderDraftHostPage() {
   if (!hostPw) {
+    // The poll timer calls this every 3s regardless of login state — without
+    // this guard, it was rebuilding the whole login form (wiping out
+    // whatever password had been typed so far) on every tick.
+    if (document.getElementById('host-pw')) return;
     app.innerHTML = `
       <div class="card" style="max-width:420px;margin:40px auto;">
         <h2>Host login</h2>
@@ -363,7 +379,14 @@ async function renderDraftHostPage() {
   app.innerHTML = `
     <div class="card">
       <h2>Draft host controls</h2>
-      <p class="muted">Phase: <b>${state.phase}</b> · pick ${Math.min(state.currentPickIndex + 1, totalPicks)} of ${totalPicks}${draftDone ? ' · all rounds complete' : ''}</p>
+      <p class="muted">Phase: <b>${state.phase}</b> · pick ${Math.min(state.currentPickIndex + 1, totalPicks)} of ${totalPicks}${draftDone ? ' · all rounds complete' : ''}${state.draftPaused ? ' · <b style="color:var(--gold);">PAUSED</b>' : ''}</p>
+      <div class="row">
+        <button class="btn secondary" id="pause-draft-btn" ${draftDone ? 'disabled' : ''}>${state.draftPaused ? 'Resume draft' : 'Pause draft'}</button>
+        <button class="btn secondary" id="restart-draft-btn">Start draft over</button>
+        <button class="btn danger" id="cancel-draft-btn">Cancel draft</button>
+      </div>
+      <p class="muted" style="margin-top:6px;">"Start over" re-randomizes order and wipes all picks, but keeps drafting. "Cancel" abandons the draft entirely and returns everyone to the lobby.</p>
+      <div class="error" id="draft-host-manage-err"></div>
     </div>
     <div class="card">
       <h2>End draft &amp; assign 17th team</h2>
@@ -376,6 +399,30 @@ async function renderDraftHostPage() {
       <div class="success" id="draft-host-ok"></div>
     </div>
   `;
+
+  document.getElementById('pause-draft-btn').onclick = async () => {
+    const err = document.getElementById('draft-host-manage-err');
+    try {
+      await api(state.draftPaused ? '/api/host/resume-draft' : '/api/host/pause-draft', { method: 'POST', asHost: true });
+      renderDraftHostPage();
+    } catch (e) { err.textContent = e.message; }
+  };
+  document.getElementById('restart-draft-btn').onclick = async () => {
+    const err = document.getElementById('draft-host-manage-err');
+    if (!confirm('Restart the draft? This re-randomizes the order and wipes every pick made so far. Players stay the same.')) return;
+    try {
+      await api('/api/host/restart-draft', { method: 'POST', asHost: true });
+      renderDraftHostPage();
+    } catch (e) { err.textContent = e.message; }
+  };
+  document.getElementById('cancel-draft-btn').onclick = async () => {
+    const err = document.getElementById('draft-host-manage-err');
+    if (!confirm("Cancel the draft entirely? This wipes every pick and returns everyone to the lobby. You'll need to start the draft again from scratch.")) return;
+    try {
+      await api('/api/host/discard-draft', { method: 'POST', asHost: true });
+      renderDraftHostPage();
+    } catch (e) { err.textContent = e.message; }
+  };
 
   const btn = document.getElementById('set-seventeenth-btn');
   if (btn && !btn.disabled) {
@@ -776,10 +823,12 @@ async function renderHostAdmin() {
     </div>
     <div class="card">
       <h2>Draft controls</h2>
-      <p class="muted">Phase: <b>${state.phase}</b>${state.phase === 'draft' ? ` · pick ${state.currentPickIndex + 1}` : ''}</p>
+      <p class="muted">Phase: <b>${state.phase}</b>${state.phase === 'draft' ? ` · pick ${state.currentPickIndex + 1}${state.draftPaused ? ' · <b style="color:var(--gold);">PAUSED</b>' : ''}` : ''}</p>
       <div class="row">
         <button class="btn" id="start-draft-btn" ${state.phase !== 'lobby' ? 'disabled' : ''}>Start draft (random order)</button>
+        ${state.phase === 'draft' ? '<button class="btn danger" id="discard-draft-btn">Discard draft</button>' : ''}
       </div>
+      ${state.phase === 'draft' ? '<p class="muted" style="margin-top:6px;">Discard wipes every pick made so far and returns everyone to the lobby. For pause/resume/restart controls, use the Draft tab\'s host page while the draft is live.</p>' : ''}
       <div class="divider"></div>
       <div class="field"><label>17th team (shared / worst team)</label>
         <select id="seventeenth-select">${state.teams.map(t => `<option value="${t.abbr}">${t.abbr} — ${t.name}</option>`).join('')}</select>
@@ -830,14 +879,28 @@ async function renderHostAdmin() {
 
   document.getElementById('start-draft-btn').onclick = async () => {
     const err = document.getElementById('draft-admin-err');
+    if (!confirm('Start the draft now with a random order? Make sure everyone who should be in the league has already joined.')) return;
     try { await api('/api/host/start-draft', { method: 'POST', asHost: true }); renderHostAdmin(); }
     catch (e) { err.textContent = e.message; }
   };
+
+  const discardBtn = document.getElementById('discard-draft-btn');
+  if (discardBtn) {
+    discardBtn.onclick = async () => {
+      const err = document.getElementById('draft-admin-err');
+      if (!confirm("Discard the draft entirely? This wipes every pick made so far and returns everyone to the lobby. You'll need to start the draft again from scratch.")) return;
+      try {
+        await api('/api/host/discard-draft', { method: 'POST', asHost: true });
+        renderHostAdmin();
+      } catch (e) { err.textContent = e.message; }
+    };
+  }
 
   document.getElementById('set-seventeenth-btn').onclick = async () => {
     const err = document.getElementById('draft-admin-err');
     const ok = document.getElementById('draft-admin-ok');
     const team = document.getElementById('seventeenth-select').value;
+    if (!confirm(`End the draft and start the season with ${team} as the shared 17th team? This can't be undone and opens Week 1 picks for everyone.`)) return;
     try {
       await api('/api/host/set-seventeenth', { method: 'POST', asHost: true, body: { team } });
       ok.textContent = `Season started with ${team} as the shared 17th team.`;
@@ -869,6 +932,7 @@ async function renderHostAdmin() {
     const err = document.getElementById('week-admin-err');
     const ok = document.getElementById('week-admin-ok');
     const week = Number(document.getElementById('week-num').value);
+    if (!confirm(`Auto-assign the 17th team (or a forfeit) to anyone who didn't pick for week ${week}? This locks their pick for that week.`)) return;
     try {
       const r = await api('/api/host/process-missed', { method: 'POST', asHost: true, body: { week } });
       ok.textContent = `Auto-assigned team 17 for ${r.assigned}, forfeited ${r.forfeited}.`; err.textContent = '';
@@ -878,6 +942,7 @@ async function renderHostAdmin() {
   document.getElementById('advance-week-btn').onclick = async () => {
     const err = document.getElementById('week-admin-err');
     const ok = document.getElementById('week-admin-ok');
+    if (!confirm('Advance to the next week? Make sure this week\'s results are synced and missed picks are processed first.')) return;
     try {
       const r = await api('/api/host/advance-week', { method: 'POST', asHost: true });
       ok.textContent = `Now on week ${r.currentWeek}.`; err.textContent = '';
