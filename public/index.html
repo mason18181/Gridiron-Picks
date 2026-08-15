@@ -3,21 +3,22 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Concert Tracker</title>
+<title>Gridiron Picks</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">CONCERT <span>TRACKER</span> <span class="build-tag">build v54</span></div>
-    <nav id="nav" class="nav hidden">
-      <button data-tab="sync">Sync</button>
-      <button data-tab="dashboard">Dashboard</button>
-      <button data-tab="settings">Settings</button>
-    </nav>
+    <div class="brand">GRIDIRON <span>PICKS</span> <span style="font-family:monospace;font-size:10px;color:var(--muted);letter-spacing:0;vertical-align:middle;">build v8</span></div>
+    <nav id="nav" class="nav hidden"></nav>
+    <div id="whoami" class="whoami"></div>
   </header>
+
   <main id="app"></main>
+
   <script src="/app.js"></script>
 </body>
 </html>
