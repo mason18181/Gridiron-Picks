@@ -450,8 +450,8 @@ app.post('/api/picks', requirePlayer, async (req, res) => {
 app.post('/api/host/sync-odds', requireHost, async (req, res) => {
   const { week } = req.body;
   try {
-    const n = await syncWeekOdds(week);
-    res.json({ ok: true, rows: n });
+    const result = await syncWeekOdds(week);
+    res.json({ ok: true, rows: result.written, diagnostics: result.diagnostics });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -593,8 +593,8 @@ async function runWeeklyAutomation() {
       // (harmless if already synced) and stop — don't touch results,
       // don't forfeit anyone, don't advance the week.
       try {
-        const n = await syncWeekOdds(outgoingWeek);
-        console.log(`Weekly automation: week ${outgoingWeek} isn't finished yet (not all games have kicked off) — synced ${n} odds row(s) for it instead of closing it out.`);
+        const result = await syncWeekOdds(outgoingWeek);
+        console.log(`Weekly automation: week ${outgoingWeek} isn't finished yet (not all games have kicked off) — synced ${result.written} odds row(s) for it instead of closing it out.`);
       } catch (e) {
         console.error(`Weekly automation: week ${outgoingWeek} isn't finished yet, and syncing its odds also failed`, e);
       }
@@ -620,8 +620,8 @@ async function runWeeklyAutomation() {
     const newWeek = outgoingWeek + 1;
 
     try {
-      const n = await syncWeekOdds(newWeek);
-      console.log(`Auto sync-odds: wrote ${n} rows for week ${newWeek}`);
+      const result = await syncWeekOdds(newWeek);
+      console.log(`Auto sync-odds: wrote ${result.written} rows for week ${newWeek}`);
     } catch (e) {
       console.error('Auto sync-odds failed', e);
     }
