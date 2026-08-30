@@ -16,6 +16,12 @@ function pickBookmaker(bookmakers) {
 // Pulls current spreads for all upcoming NFL games and stores them tagged
 // under the given league "week" number (the host decides which week these
 // games belong to — the API itself doesn't label NFL week numbers).
+// The odds endpoint returns every upcoming game it currently has lines
+// for with no date filtering at all — if sportsbooks have posted lines
+// further out than just the immediate week (which they sometimes do),
+// those get returned right alongside this week's games. Restricting to a
+// near-term window is what keeps a genuinely future game (or any other
+// anomalous entry) from getting mislabeled as "this week."
 async function syncWeekOdds(week) {
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) throw new Error('ODDS_API_KEY is not set');
@@ -28,8 +34,28 @@ async function syncWeekOdds(week) {
   }
   const events = await res.json();
 
+  // Scoped to the current NFL week's boundary (games run Thursday through
+  // Monday), ending at the upcoming Monday regardless of which day this
+  // actually runs on — not a fixed day-count, since 10 days from a
+  // Tuesday reaches all the way into the following week's Thursday game.
+  const now = new Date();
+  const daysUntilMonday = (8 - now.getDay()) % 7; // getDay(): 0=Sun..6=Sat; Monday=1
+  const windowEnd = new Date(now);
+  windowEnd.setDate(windowEnd.getDate() + daysUntilMonday);
+  windowEnd.setHours(23, 59, 59, 999); // include all of Monday's games, even a late Monday Night kickoff
+  const nowMs = now.getTime();
+  const windowEndMs = windowEnd.getTime();
+  const inWindow = events.filter(ev => {
+    const t = new Date(ev.commence_time).getTime();
+    return t >= nowMs && t <= windowEndMs;
+  });
+  const skippedFarFuture = events.length - inWindow.length;
+  if (skippedFarFuture > 0) {
+    console.log(`syncWeekOdds: ${skippedFarFuture} event(s) outside this week (through the upcoming Monday) were excluded`);
+  }
+
   const rows = [];
-  for (const ev of events) {
+  for (const ev of inWindow) {
     const book = pickBookmaker(ev.bookmakers);
     const market = book && book.markets.find(m => m.key === 'spreads');
     if (!market) continue;
