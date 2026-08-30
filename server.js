@@ -123,6 +123,7 @@ app.get('/api/state', async (req, res) => {
     currentPickIndex: cfg.current_pick_index,
     pickDeadline: cfg.pick_deadline,
     draftPaused: cfg.draft_paused,
+    draftKickedOff: cfg.draft_kicked_off,
     rounds: cfg.rounds,
     currentTurnPlayerId,
     lastAutoRun: cfg.last_auto_run,
@@ -133,6 +134,22 @@ app.get('/api/state', async (req, res) => {
 });
 
 // ---------- draft ----------
+// Settable once the draft is open but before it's kicked off — this is
+// what makes picking it early actually exclude it from the pool, rather
+// than just recording it for later.
+app.post('/api/host/set-seventeenth-pre-draft', requireHost, async (req, res) => {
+  const { team } = req.body;
+  if (!team) return res.status(400).json({ error: 'No team provided' });
+  const cfg = (await pool.query('SELECT phase, draft_kicked_off FROM config WHERE id=1')).rows[0];
+  if (cfg.phase !== 'draft' || cfg.draft_kicked_off) return res.status(400).json({ error: 'The 17th team can only be set (or changed) after opening the draft and before kicking it off' });
+  await pool.query('UPDATE config SET seventeenth_team=$1 WHERE id=1', [team]);
+  res.json({ ok: true, team });
+});
+
+// Opens the draft — everyone can see the board and who's on the clock,
+// but nobody can actually submit a pick and no countdown is running yet.
+// That's deliberate: it gives the host room to set the 17th team (from
+// inside the draft's own host page) before anything starts.
 app.post('/api/host/start-draft', requireHost, async (req, res) => {
   const players = (await pool.query('SELECT id FROM players ORDER BY id')).rows;
   if (players.length < 2) return res.status(400).json({ error: 'Need at least 2 players' });
@@ -144,10 +161,22 @@ app.post('/api/host/start-draft', requireHost, async (req, res) => {
   const teamCap = Math.floor((2 / 3) * ids.length);
   await pool.query(
     `UPDATE config SET phase='draft', draft_order=$1, team_cap=$2, current_pick_index=0,
-     pick_deadline = now() + interval '30 seconds' WHERE id=1`,
+     draft_kicked_off=false, pick_deadline=NULL WHERE id=1`,
     [ids, teamCap]
   );
   res.json({ ok: true, draftOrder: ids, teamCap });
+});
+
+// Starts the actual clock — requires the 17th team to already be set, so
+// the sequence (open draft -> set 17th team -> kick off) can't be done
+// out of order and accidentally let it be drafted normally.
+app.post('/api/host/kickoff-draft', requireHost, async (req, res) => {
+  const cfg = (await pool.query('SELECT phase, draft_kicked_off, seventeenth_team FROM config WHERE id=1')).rows[0];
+  if (cfg.phase !== 'draft') return res.status(400).json({ error: 'Draft is not open' });
+  if (cfg.draft_kicked_off) return res.status(400).json({ error: 'Draft has already been kicked off' });
+  if (!cfg.seventeenth_team) return res.status(400).json({ error: 'Set the 17th team before kicking off the draft' });
+  await pool.query(`UPDATE config SET draft_kicked_off=true, pick_deadline = now() + interval '30 seconds' WHERE id=1`);
+  res.json({ ok: true });
 });
 
 app.post('/api/host/pause-draft', requireHost, async (req, res) => {
@@ -183,7 +212,7 @@ app.post('/api/host/restart-draft', requireHost, async (req, res) => {
   await pool.query('DELETE FROM draft_picks');
   await pool.query(
     `UPDATE config SET draft_order=$1, team_cap=$2, current_pick_index=0, draft_paused=false,
-     pick_deadline = now() + interval '30 seconds' WHERE id=1`,
+     draft_kicked_off=false, pick_deadline=NULL WHERE id=1`,
     [ids, teamCap]
   );
   res.json({ ok: true, draftOrder: ids, teamCap });
@@ -197,7 +226,7 @@ app.post('/api/host/discard-draft', requireHost, async (req, res) => {
   await pool.query('DELETE FROM draft_picks');
   await pool.query(
     `UPDATE config SET phase='lobby', draft_order='{}', team_cap=0, current_pick_index=0,
-     pick_deadline=NULL, draft_paused=false WHERE id=1`
+     pick_deadline=NULL, draft_paused=false, draft_kicked_off=false WHERE id=1`
   );
   res.json({ ok: true });
 });
@@ -225,18 +254,23 @@ async function advancePick(client) {
 }
 
 async function availableTeamsFor(playerId) {
-  const cfg = (await pool.query('SELECT team_cap FROM config WHERE id=1')).rows[0];
+  const cfg = (await pool.query('SELECT team_cap, seventeenth_team FROM config WHERE id=1')).rows[0];
   const counts = (await pool.query('SELECT team, count(*) c FROM draft_picks GROUP BY team')).rows;
   const countMap = {};
   counts.forEach(r => { countMap[r.team] = Number(r.c); });
   const mine = (await pool.query('SELECT team FROM draft_picks WHERE player_id=$1', [playerId])).rows.map(r => r.team);
-  return TEAMS.map(t => t.abbr).filter(abbr => (countMap[abbr] || 0) < cfg.team_cap && !mine.includes(abbr));
+  return TEAMS.map(t => t.abbr).filter(abbr =>
+    abbr !== cfg.seventeenth_team &&
+    (countMap[abbr] || 0) < cfg.team_cap &&
+    !mine.includes(abbr)
+  );
 }
 
 app.post('/api/draft/pick', requirePlayer, async (req, res) => {
   const { team } = req.body;
   const cfg = (await pool.query('SELECT * FROM config WHERE id=1')).rows[0];
   if (cfg.phase !== 'draft') return res.status(400).json({ error: 'Draft is not active' });
+  if (!cfg.draft_kicked_off) return res.status(400).json({ error: 'The draft is open but the host has not kicked it off yet' });
   if (cfg.draft_paused) return res.status(400).json({ error: 'The draft is paused — wait for the host to resume it' });
   const turnPlayerId = computeTurn(cfg);
   if (turnPlayerId !== req.player.id) return res.status(400).json({ error: "It's not your turn" });
@@ -278,11 +312,13 @@ app.post('/api/host/set-seventeenth', requireHost, async (req, res) => {
   const cfg = (await pool.query('SELECT * FROM config WHERE id=1')).rows[0];
   const n = cfg.draft_order.length;
   if (cfg.current_pick_index < n * cfg.rounds) return res.status(400).json({ error: 'Draft is not finished yet' });
+  const finalTeam = cfg.seventeenth_team || team; // already picked before the draft, or falling back to picking it now
+  if (!finalTeam) return res.status(400).json({ error: 'No 17th team selected' });
   await pool.query(
     `UPDATE config SET seventeenth_team=$1, phase='season', current_week=1 WHERE id=1`,
-    [team]
+    [finalTeam]
   );
-  res.json({ ok: true });
+  res.json({ ok: true, team: finalTeam });
 });
 
 async function getCurrentStreakForPlayer(playerId, beforeWeek, seventeenthTeam) {
@@ -533,6 +569,38 @@ async function runWeeklyAutomation() {
     }
 
     const outgoingWeek = cfg.current_week;
+
+    // Don't treat the current week as "outgoing" (finished, ready for
+    // results + advance) until its games have actually been played. This
+    // matters most right at season start: week 1 has no prior week to
+    // wrap up, so the first time this runs, the current week's games
+    // haven't happened yet — closing it out then would sync empty
+    // results, wrongly forfeit everyone who hasn't picked yet (since they
+    // never had a real chance to), and skip straight past week 1's own
+    // odds sync. commence_time (already stored from whenever odds were
+    // synced) is a reliable signal: if any of the week's games haven't
+    // kicked off yet, the week isn't over.
+    const readiness = (await pool.query(
+      `SELECT count(*) AS total, count(*) FILTER (WHERE commence_time < now()) AS started
+       FROM weekly_odds WHERE week = $1`,
+      [outgoingWeek]
+    )).rows[0];
+    const weekIsReadyToClose = Number(readiness.total) > 0 && Number(readiness.started) === Number(readiness.total);
+
+    if (!weekIsReadyToClose) {
+      // Either this week's odds were never synced yet, or its games
+      // haven't all kicked off. Just make sure odds are in place for it
+      // (harmless if already synced) and stop — don't touch results,
+      // don't forfeit anyone, don't advance the week.
+      try {
+        const n = await syncWeekOdds(outgoingWeek);
+        console.log(`Weekly automation: week ${outgoingWeek} isn't finished yet (not all games have kicked off) — synced ${n} odds row(s) for it instead of closing it out.`);
+      } catch (e) {
+        console.error(`Weekly automation: week ${outgoingWeek} isn't finished yet, and syncing its odds also failed`, e);
+      }
+      await pool.query('UPDATE config SET last_auto_run = $1 WHERE id=1', [today]);
+      return;
+    }
 
     try {
       const n = await syncWeekResults(outgoingWeek);
