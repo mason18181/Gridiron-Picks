@@ -987,7 +987,27 @@ async function renderHostAdmin() {
     const week = Number(document.getElementById('week-num').value);
     try {
       const r = await api('/api/host/sync-odds', { method: 'POST', asHost: true, body: { week } });
-      ok.textContent = `Synced spreads for ${r.rows} teams.`; err.textContent = '';
+      err.textContent = '';
+      const d = r.diagnostics;
+      if (r.rows > 0) {
+        ok.textContent = `Synced spreads for ${r.rows} teams.`;
+      } else {
+        // Nothing got written — show exactly where the count dropped to
+        // zero instead of just reporting the empty result.
+        ok.innerHTML = `
+          <div>Synced 0 teams. Here's why:</div>
+          <div style="font-size:12px;margin-top:4px;">
+            <div>API returned ${d.rawEventCount} raw event(s) total.</div>
+            <div>Window: ${d.windowStart} through ${d.windowEnd}.</div>
+            ${d.firstRawEvent ? `<div>First raw event: ${d.firstRawEvent.matchup} at ${d.firstRawEvent.commence_time}.</div>` : '<div>No events in the raw API response at all.</div>'}
+            <div>${d.inWindowCount} of ${d.rawEventCount} fell inside the window (${d.skippedFarFuture} excluded as outside it).</div>
+            ${d.inWindowCount > 0 ? `
+              <div>Of those in-window: ${d.noBookmaker} had no bookmaker odds posted, ${d.noMarket} had no spreads market.</div>
+              ${d.unmappedTeamNames.length ? `<div>Unmapped team name(s) — these don't match our team list: ${d.unmappedTeamNames.join(', ')}</div>` : ''}
+            ` : ''}
+          </div>
+        `;
+      }
     } catch (e) { err.textContent = e.message; ok.textContent = ''; }
   };
 
