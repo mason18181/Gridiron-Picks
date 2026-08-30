@@ -34,17 +34,16 @@ async function syncWeekOdds(week) {
   }
   const events = await res.json();
 
-  // Scoped to the current NFL week's boundary (games run Thursday through
-  // Monday), ending at the upcoming Monday regardless of which day this
-  // actually runs on — not a fixed day-count, since 10 days from a
-  // Tuesday reaches all the way into the following week's Thursday game.
-  const now = new Date();
-  const daysUntilMonday = (8 - now.getDay()) % 7; // getDay(): 0=Sun..6=Sat; Monday=1
-  const windowEnd = new Date(now);
-  windowEnd.setDate(windowEnd.getDate() + daysUntilMonday);
-  windowEnd.setHours(23, 59, 59, 999); // include all of Monday's games, even a late Monday Night kickoff
-  const nowMs = now.getTime();
-  const windowEndMs = windowEnd.getTime();
+  // Scoped to one NFL week (Thursday through Monday, ~5 days) anchored to
+  // the earliest game actually being returned — not to today's date. A
+  // window based on "today's calendar week" only works if you happen to
+  // sync during the same week the games are played; syncing ahead of time
+  // (days or over a week before kickoff) broke it completely, since
+  // "today's Monday" has nothing to do with when the games actually are.
+  const nowMs = Date.now();
+  const upcoming = events.filter(ev => new Date(ev.commence_time).getTime() >= nowMs);
+  const earliestMs = upcoming.length ? Math.min(...upcoming.map(ev => new Date(ev.commence_time).getTime())) : null;
+  const windowEndMs = earliestMs !== null ? earliestMs + 6 * 24 * 60 * 60 * 1000 : nowMs; // 6 days: enough margin that a Monday game kicking off even a few hours later than the anchor Thursday game still lands inside the window, while still safely short of the following week's Thursday (7 days out)
   const inWindow = events.filter(ev => {
     const t = new Date(ev.commence_time).getTime();
     return t >= nowMs && t <= windowEndMs;
