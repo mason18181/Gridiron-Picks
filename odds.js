@@ -50,18 +50,20 @@ async function syncWeekOdds(week) {
     return t >= nowMs && t <= windowEndMs;
   });
   const skippedFarFuture = events.length - inWindow.length;
-  if (skippedFarFuture > 0) {
-    console.log(`syncWeekOdds: ${skippedFarFuture} event(s) outside this week (through the upcoming Monday) were excluded`);
-  }
 
   const rows = [];
+  let noBookmaker = 0, noMarket = 0;
+  const unmappedTeamNames = [];
   for (const ev of inWindow) {
     const book = pickBookmaker(ev.bookmakers);
-    const market = book && book.markets.find(m => m.key === 'spreads');
-    if (!market) continue;
+    if (!book) { noBookmaker++; continue; }
+    const market = book.markets.find(m => m.key === 'spreads');
+    if (!market) { noMarket++; continue; }
 
     const homeAbbr = abbrForTeamName(ev.home_team);
     const awayAbbr = abbrForTeamName(ev.away_team);
+    if (!homeAbbr) unmappedTeamNames.push(ev.home_team);
+    if (!awayAbbr) unmappedTeamNames.push(ev.away_team);
     if (!homeAbbr || !awayAbbr) continue;
 
     for (const outcome of market.outcomes) {
@@ -86,7 +88,21 @@ async function syncWeekOdds(week) {
       [week, r.team, r.opponent, r.spread, r.commence_time]
     );
   }
-  return rows.length;
+
+  return {
+    written: rows.length,
+    diagnostics: {
+      rawEventCount: events.length,
+      windowStart: new Date(nowMs).toISOString(),
+      windowEnd: new Date(windowEndMs).toISOString(),
+      firstRawEvent: events[0] ? { commence_time: events[0].commence_time, matchup: `${events[0].away_team} @ ${events[0].home_team}` } : null,
+      inWindowCount: inWindow.length,
+      skippedFarFuture,
+      noBookmaker,
+      noMarket,
+      unmappedTeamNames: [...new Set(unmappedTeamNames)],
+    },
+  };
 }
 
 // Pulls final scores for recently completed games and stores W/L per team
