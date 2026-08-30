@@ -201,6 +201,9 @@ function draftClockBarHtml(state, nameById, draftDone) {
   if (draftDone) {
     return `${lastPick}<div class="card"><h2>Draft status</h2><p class="muted">All ${state.rounds} rounds are done. Waiting on the host to assign the shared 17th team.</p></div>`;
   }
+  if (!state.draftKickedOff) {
+    return `${lastPick}<div class="card"><h2>Draft status</h2><p class="muted">The draft is open — take a look at the board below. The host is finishing setup (the shared 17th team) and will kick off the clock shortly.</p></div>`;
+  }
   if (!state.pickDeadline) return lastPick;
   const n = state.draftOrder.length;
   const turnName = nameById[state.currentTurnPlayerId] || '?';
@@ -252,7 +255,7 @@ async function renderDraftPage() {
   const nameById = {};
   state.players.forEach(p => { nameById[p.id] = p.name; });
 
-  const myTurn = !draftDone && !state.draftPaused && state.currentTurnPlayerId === me.id;
+  const myTurn = !draftDone && state.draftKickedOff && !state.draftPaused && state.currentTurnPlayerId === me.id;
   if (!myTurn) draftSelection = null; // clear any stale selection once it's not your turn
 
   const draftedByMe = state.draftPicks.filter(p => p.player_id === me.id).map(p => p.team);
@@ -260,13 +263,14 @@ async function renderDraftPage() {
   const teamGrid = state.teams.map(t => {
     const full = t.drafted >= state.teamCap;
     const mine = draftedByMe.includes(t.abbr);
-    const disabled = full || mine || !myTurn;
+    const isSeventeenth = t.abbr === state.seventeenthTeam;
+    const disabled = full || mine || !myTurn || isSeventeenth;
     const selected = draftSelection === t.abbr;
     return `
-      <div class="team-card ${disabled ? 'disabled' : ''} ${selected ? 'selected' : ''}" data-team="${t.abbr}" ${disabled ? '' : 'data-pickable="1"'}>
-        <div class="team-abbr">${t.abbr}</div>
+      <div class="team-card ${disabled && !isSeventeenth ? 'disabled' : ''} ${selected ? 'selected' : ''}" data-team="${t.abbr}" ${!disabled ? 'data-pickable="1"' : ''} ${isSeventeenth ? 'style="border-color:var(--gold);background:rgba(232,185,74,0.08);opacity:1;"' : ''}>
+        <div class="team-abbr">${t.abbr}${isSeventeenth ? ' <span class="pill gold" style="font-size:9px;">EVERYONE\'S</span>' : ''}</div>
         <div class="team-meta">${t.name}</div>
-        <div class="team-meta">${t.drafted}/${state.teamCap} drafted</div>
+        <div class="team-meta">${isSeventeenth ? 'Shared 17th team' : `${t.drafted}/${state.teamCap} drafted`}</div>
       </div>
     `;
   }).join('');
@@ -274,7 +278,7 @@ async function renderDraftPage() {
   app.innerHTML = draftClockBarHtml(state, nameById, draftDone) + (draftDone ? '' : `
     <div class="card">
       <h2>Team bank</h2>
-      <p class="muted">${state.draftPaused ? 'The draft is paused — hang tight.' : (myTurn ? (draftSelection ? `Selected <b>${draftSelection}</b> — click Submit to confirm.` : 'Your pick — click a team, then submit.') : 'Waiting for your turn.')}</p>
+      <p class="muted">${!state.draftKickedOff ? 'The draft is open, but the host hasn\'t kicked off the clock yet.' : state.draftPaused ? 'The draft is paused — hang tight.' : (myTurn ? (draftSelection ? `Selected <b>${draftSelection}</b> — click Submit to confirm.` : 'Your pick — click a team, then submit.') : 'Waiting for your turn.')}</p>
       <div class="team-grid">${teamGrid}</div>
       <div class="row" style="margin-top:14px;">
         <button class="btn" id="submit-draft-pick-btn" ${myTurn && draftSelection ? '' : 'disabled'}>Submit pick</button>
@@ -379,9 +383,9 @@ async function renderDraftHostPage() {
   app.innerHTML = `
     <div class="card">
       <h2>Draft host controls</h2>
-      <p class="muted">Phase: <b>${state.phase}</b> · pick ${Math.min(state.currentPickIndex + 1, totalPicks)} of ${totalPicks}${draftDone ? ' · all rounds complete' : ''}${state.draftPaused ? ' · <b style="color:var(--gold);">PAUSED</b>' : ''}</p>
+      <p class="muted">Phase: <b>${state.phase}</b> · pick ${Math.min(state.currentPickIndex + 1, totalPicks)} of ${totalPicks}${draftDone ? ' · all rounds complete' : ''}${!state.draftKickedOff ? ' · <b style="color:var(--gold);">OPEN, NOT KICKED OFF</b>' : ''}${state.draftPaused ? ' · <b style="color:var(--gold);">PAUSED</b>' : ''}</p>
       <div class="row">
-        <button class="btn secondary" id="pause-draft-btn" ${draftDone ? 'disabled' : ''}>${state.draftPaused ? 'Resume draft' : 'Pause draft'}</button>
+        <button class="btn secondary" id="pause-draft-btn" ${draftDone || !state.draftKickedOff ? 'disabled' : ''}>${state.draftPaused ? 'Resume draft' : 'Pause draft'}</button>
         <button class="btn secondary" id="restart-draft-btn">Start draft over</button>
         <button class="btn danger" id="cancel-draft-btn">Cancel draft</button>
       </div>
@@ -389,17 +393,62 @@ async function renderDraftHostPage() {
       <div class="error" id="draft-host-manage-err"></div>
     </div>
     <div class="card">
+      <h2>17th team &amp; kickoff</h2>
+      ${!state.draftKickedOff ? `
+        <p class="muted">Everyone can see the draft board, but nobody can pick yet. Set the shared 17th team first — it's pulled out of the pool immediately — then kick off the clock when you're ready.</p>
+        <div class="field"><label>17th team (shared / worst team)</label>
+          <select id="seventeenth-select-pre">${state.teams.map(t => `<option value="${t.abbr}" ${state.seventeenthTeam === t.abbr ? 'selected' : ''}>${t.abbr} — ${t.name}</option>`).join('')}</select>
+        </div>
+        <div class="row">
+          <button class="btn secondary" id="set-seventeenth-pre-btn">${state.seventeenthTeam ? `Change (currently ${state.seventeenthTeam})` : 'Set 17th team'}</button>
+          <button class="btn" id="kickoff-draft-btn" ${state.seventeenthTeam ? '' : 'disabled'}>Kick off draft</button>
+        </div>
+        ${!state.seventeenthTeam ? '<p class="muted" style="margin-top:6px;">Set the 17th team before kicking off.</p>' : ''}
+      ` : `
+        <p class="muted">17th team: <b>${state.seventeenthTeam}</b> — already excluded from the pool, draft is live.</p>
+      `}
+      <div class="error" id="seventeenth-kickoff-err"></div>
+      <div class="success" id="seventeenth-kickoff-ok"></div>
+    </div>
+    <div class="card">
       <h2>End draft &amp; assign 17th team</h2>
-      <p class="muted">${draftDone ? "All rounds are done — pick the shared 17th team and start the season. This ends the draft for everyone and opens Week 1 picks." : 'Available once all rounds are complete.'}</p>
-      <div class="field"><label>17th team (shared / worst team)</label>
-        <select id="seventeenth-select" ${draftDone ? '' : 'disabled'}>${state.teams.map(t => `<option value="${t.abbr}">${t.abbr} — ${t.name}</option>`).join('')}</select>
-      </div>
-      <button class="btn" id="set-seventeenth-btn" ${draftDone ? '' : 'disabled'}>End draft &amp; start season</button>
+      <p class="muted">${draftDone ? "All rounds are done — start the season. This ends the draft for everyone and opens Week 1 picks." : 'Available once all rounds are complete.'}</p>
+      ${state.seventeenthTeam
+        ? `<button class="btn" id="set-seventeenth-btn" ${draftDone ? '' : 'disabled'}>End draft &amp; start season</button>`
+        : `<div class="field"><label>17th team (shared / worst team)</label>
+             <select id="seventeenth-select" ${draftDone ? '' : 'disabled'}>${state.teams.map(t => `<option value="${t.abbr}">${t.abbr} — ${t.name}</option>`).join('')}</select>
+           </div>
+           <button class="btn" id="set-seventeenth-btn" ${draftDone ? '' : 'disabled'}>End draft &amp; start season</button>`}
       <div class="error" id="draft-host-err"></div>
       <div class="success" id="draft-host-ok"></div>
     </div>
   `;
 
+  const preSeventeenthBtn = document.getElementById('set-seventeenth-pre-btn');
+  if (preSeventeenthBtn) {
+    preSeventeenthBtn.onclick = async () => {
+      const err = document.getElementById('seventeenth-kickoff-err');
+      const ok = document.getElementById('seventeenth-kickoff-ok');
+      const team = document.getElementById('seventeenth-select-pre').value;
+      try {
+        await api('/api/host/set-seventeenth-pre-draft', { method: 'POST', asHost: true, body: { team } });
+        ok.textContent = `${team} set as the shared 17th team.`;
+        err.textContent = '';
+        renderDraftHostPage();
+      } catch (e) { err.textContent = e.message; ok.textContent = ''; }
+    };
+  }
+  const kickoffBtn = document.getElementById('kickoff-draft-btn');
+  if (kickoffBtn) {
+    kickoffBtn.onclick = async () => {
+      const err = document.getElementById('seventeenth-kickoff-err');
+      if (!confirm(`Kick off the draft? The clock starts immediately and ${state.seventeenthTeam} won't be pickable by anyone.`)) return;
+      try {
+        await api('/api/host/kickoff-draft', { method: 'POST', asHost: true });
+        renderDraftHostPage();
+      } catch (e) { err.textContent = e.message; }
+    };
+  }
   document.getElementById('pause-draft-btn').onclick = async () => {
     const err = document.getElementById('draft-host-manage-err');
     try {
@@ -809,6 +858,8 @@ async function renderHostAdmin() {
         </div>`).join('')
     : '<p class="muted">No pending requests.</p>';
 
+  const draftDone = state.phase === 'draft' && state.draftOrder && state.draftOrder.length && state.currentPickIndex >= state.draftOrder.length * state.rounds;
+
   app.innerHTML = `
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center;">
@@ -823,17 +874,22 @@ async function renderHostAdmin() {
     </div>
     <div class="card">
       <h2>Draft controls</h2>
-      <p class="muted">Phase: <b>${state.phase}</b>${state.phase === 'draft' ? ` · pick ${state.currentPickIndex + 1}${state.draftPaused ? ' · <b style="color:var(--gold);">PAUSED</b>' : ''}` : ''}</p>
+      <p class="muted">Phase: <b>${state.phase}</b>${state.phase === 'draft' ? ` · pick ${state.currentPickIndex + 1}${!state.draftKickedOff ? ' · <b style="color:var(--gold);">OPEN, NOT KICKED OFF</b>' : ''}${state.draftPaused ? ' · <b style="color:var(--gold);">PAUSED</b>' : ''}` : ''}</p>
       <div class="row">
         <button class="btn" id="start-draft-btn" ${state.phase !== 'lobby' ? 'disabled' : ''}>Start draft (random order)</button>
         ${state.phase === 'draft' ? '<button class="btn danger" id="discard-draft-btn">Discard draft</button>' : ''}
       </div>
-      ${state.phase === 'draft' ? '<p class="muted" style="margin-top:6px;">Discard wipes every pick made so far and returns everyone to the lobby. For pause/resume/restart controls, use the Draft tab\'s host page while the draft is live.</p>' : ''}
+      ${state.phase === 'draft' ? '<p class="muted" style="margin-top:6px;">Discard wipes every pick made so far and returns everyone to the lobby. Set the 17th team and kick off the draft from the Draft tab\'s host page — pause/resume/restart controls are there too.</p>' : ''}
       <div class="divider"></div>
-      <div class="field"><label>17th team (shared / worst team)</label>
-        <select id="seventeenth-select">${state.teams.map(t => `<option value="${t.abbr}">${t.abbr} — ${t.name}</option>`).join('')}</select>
-      </div>
-      <button class="btn" id="set-seventeenth-btn">Lock in 17th team & start season</button>
+      ${state.seventeenthTeam ? `
+        <p class="muted">17th team: <b>${state.seventeenthTeam}</b></p>
+        <button class="btn" id="finish-season-btn" ${draftDone ? '' : 'disabled'}>Start season</button>
+      ` : `
+        <div class="field"><label>17th team (shared / worst team)</label>
+          <select id="seventeenth-select">${state.teams.map(t => `<option value="${t.abbr}">${t.abbr} — ${t.name}</option>`).join('')}</select>
+        </div>
+        <button class="btn" id="set-seventeenth-btn">Lock in 17th team & start season</button>
+      `}
       <div class="error" id="draft-admin-err"></div>
       <div class="success" id="draft-admin-ok"></div>
     </div>
@@ -877,6 +933,20 @@ async function renderHostAdmin() {
     };
   });
 
+  const finishSeasonBtn = document.getElementById('finish-season-btn');
+  if (finishSeasonBtn) {
+    finishSeasonBtn.onclick = async () => {
+      const err = document.getElementById('draft-admin-err');
+      const ok = document.getElementById('draft-admin-ok');
+      if (!confirm(`Start the season with ${state.seventeenthTeam} as the shared 17th team? This can't be undone and opens Week 1 picks for everyone.`)) return;
+      try {
+        await api('/api/host/set-seventeenth', { method: 'POST', asHost: true, body: {} });
+        ok.textContent = `Season started with ${state.seventeenthTeam} as the shared 17th team.`;
+        err.textContent = '';
+        renderHostAdmin();
+      } catch (e) { err.textContent = e.message; ok.textContent = ''; }
+    };
+  }
   document.getElementById('start-draft-btn').onclick = async () => {
     const err = document.getElementById('draft-admin-err');
     if (!confirm('Start the draft now with a random order? Make sure everyone who should be in the league has already joined.')) return;
