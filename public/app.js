@@ -966,17 +966,20 @@ async function renderHostAdmin() {
     };
   }
 
-  document.getElementById('set-seventeenth-btn').onclick = async () => {
-    const err = document.getElementById('draft-admin-err');
-    const ok = document.getElementById('draft-admin-ok');
-    const team = document.getElementById('seventeenth-select').value;
-    if (!confirm(`End the draft and start the season with ${team} as the shared 17th team? This can't be undone and opens Week 1 picks for everyone.`)) return;
-    try {
-      await api('/api/host/set-seventeenth', { method: 'POST', asHost: true, body: { team } });
-      ok.textContent = `Season started with ${team} as the shared 17th team.`;
-      err.textContent = '';
-    } catch (e) { err.textContent = e.message; ok.textContent = ''; }
-  };
+  const oldSetSeventeenthBtn = document.getElementById('set-seventeenth-btn');
+  if (oldSetSeventeenthBtn) {
+    oldSetSeventeenthBtn.onclick = async () => {
+      const err = document.getElementById('draft-admin-err');
+      const ok = document.getElementById('draft-admin-ok');
+      const team = document.getElementById('seventeenth-select').value;
+      if (!confirm(`End the draft and start the season with ${team} as the shared 17th team? This can't be undone and opens Week 1 picks for everyone.`)) return;
+      try {
+        await api('/api/host/set-seventeenth', { method: 'POST', asHost: true, body: { team } });
+        ok.textContent = `Season started with ${team} as the shared 17th team.`;
+        err.textContent = '';
+      } catch (e) { err.textContent = e.message; ok.textContent = ''; }
+    };
+  }
 
   document.getElementById('sync-odds-btn').onclick = async () => {
     const err = document.getElementById('week-admin-err');
