@@ -8,6 +8,17 @@ const pool = new Pool({
     : { rejectUnauthorized: false },
 });
 
+// Without this, a background error on an IDLE connection in the pool (not
+// one we're actively querying) crashes the whole Node process, regardless
+// of try/catch anywhere else in the code — this is exactly what happens
+// when Postgres briefly restarts ("the database system is starting up")
+// and an idle client gets disconnected. Logging it here instead of
+// leaving it unhandled is what keeps one transient DB blip from taking
+// the entire app down.
+pool.on('error', (err) => {
+  console.error('Postgres pool emitted a background error (idle client) — not crashing the app for it:', err.message);
+});
+
 async function initSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS players (
