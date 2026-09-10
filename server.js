@@ -7,6 +7,17 @@ const { TEAMS } = require('./teams');
 const { syncWeekOdds, syncWeekResults } = require('./odds');
 const { computeScoreboard, computePlayerHistory, matchupType, pointsForWin } = require('./scoring');
 
+// A second layer of defense beyond the pool's own error handler (db.js) —
+// this catches anything else that might otherwise crash the whole process
+// (an unhandled promise rejection from any async code path, or a truly
+// uncaught exception) and logs it instead of taking the app down.
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled promise rejection — not crashing the app for it:', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception — not crashing the app for it:', err);
+});
+
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
