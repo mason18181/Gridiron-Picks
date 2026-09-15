@@ -787,7 +787,7 @@ function renderScoreboardAnalytics(board, subnavHtml) {
     window._analyticsChart = new Chart(ctx, {
       type: 'line',
       data: { labels: weeks.map(w => `Wk ${w}`), datasets: visibleDatasets },
-      plugins: [ChartDataLabels],
+      plugins: typeof ChartDataLabels !== 'undefined' ? [ChartDataLabels] : [],
       options: {
         responsive: true,
         layout: { padding: { top: 20, bottom: 10 } },
@@ -909,6 +909,16 @@ async function renderHostAdmin() {
       </div>
       <div class="error" id="week-admin-err"></div>
       <div class="success" id="week-admin-ok"></div>
+      <div class="divider"></div>
+      <p class="muted">If a game is still showing "pending" from before this fix was deployed, the sync button above (now pulling from ESPN's scoreboard) should catch it on the next run. If it somehow still doesn't, set the actual result here directly.</p>
+      <div class="row">
+        <input id="override-week" type="number" placeholder="Week" value="${state.currentWeek || 1}" style="max-width:80px;" />
+        <input id="override-team" placeholder="Team abbr (e.g. NE)" style="max-width:140px;" />
+        <select id="override-result"><option value="W">Win</option><option value="L">Loss</option></select>
+        <button class="btn secondary" id="set-result-override-btn">Set result</button>
+      </div>
+      <div class="error" id="override-err"></div>
+      <div class="success" id="override-ok"></div>
     </div>
   `;
 
@@ -1040,6 +1050,19 @@ async function renderHostAdmin() {
       const r = await api('/api/host/advance-week', { method: 'POST', asHost: true });
       ok.textContent = `Now on week ${r.currentWeek}.`; err.textContent = '';
       renderHostAdmin();
+    } catch (e) { err.textContent = e.message; ok.textContent = ''; }
+  };
+  document.getElementById('set-result-override-btn').onclick = async () => {
+    const err = document.getElementById('override-err');
+    const ok = document.getElementById('override-ok');
+    const week = Number(document.getElementById('override-week').value);
+    const team = document.getElementById('override-team').value.trim().toUpperCase();
+    const result = document.getElementById('override-result').value;
+    if (!team) { err.textContent = 'Enter a team abbreviation.'; return; }
+    if (!confirm(`Set week ${week}, ${team} to a ${result === 'W' ? 'Win' : 'Loss'}? This directly overwrites whatever's currently recorded.`)) return;
+    try {
+      await api('/api/host/set-result-override', { method: 'POST', asHost: true, body: { week, team, result } });
+      ok.textContent = `Set week ${week} ${team} to ${result}.`; err.textContent = '';
     } catch (e) { err.textContent = e.message; ok.textContent = ''; }
   };
 }
