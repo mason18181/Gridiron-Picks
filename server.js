@@ -478,6 +478,22 @@ app.post('/api/host/sync-results', requireHost, async (req, res) => {
   }
 });
 
+// For a game the results API can no longer provide (its 3-day lookback
+// has already passed) — lets the host directly record what actually
+// happened instead of leaving that pick stuck on "pending" forever.
+app.post('/api/host/set-result-override', requireHost, async (req, res) => {
+  const { week, team, result } = req.body;
+  if (!week || !team || (result !== 'W' && result !== 'L')) {
+    return res.status(400).json({ error: 'Need a week, team, and result of W or L' });
+  }
+  await pool.query(
+    `INSERT INTO weekly_results (week, team, result) VALUES ($1,$2,$3)
+     ON CONFLICT (week, team) DO UPDATE SET result = EXCLUDED.result`,
+    [week, team, result]
+  );
+  res.json({ ok: true });
+});
+
 // Auto-assigns team 17 (or a forfeit) to any player who never submitted a
 // pick for the given week. Shared by the manual host button and the
 // automated Tuesday-morning job.
