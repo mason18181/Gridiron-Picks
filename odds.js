@@ -104,49 +104,53 @@ async function syncWeekOdds(week) {
   };
 }
 
-// Pulls final scores for recently completed games and stores W/L per team
-// under the given league week.
+// Pulls final scores for a given NFL week from ESPN's public scoreboard.
+// Switched from The Odds API's /scores endpoint, which is hard-capped by
+// the provider at 3 days back (confirmed in their own docs) — by the time
+// our weekly automation runs on the closing Tuesday, an early-week game
+// (a Wednesday opener, or even a normal Thursday game) is already 5-6+
+// days old and silently never comes back. ESPN's scoreboard is queried by
+// week number directly, not a rolling day window, so it has no such
+// limit — and it's free, with no API key required.
 async function syncWeekResults(week) {
-  const apiKey = process.env.ODDS_API_KEY;
-  if (!apiKey) throw new Error('ODDS_API_KEY is not set');
+  const now = new Date();
+  // NFL "season year" is the year the season started — games in Jan/Feb
+  // still belong to the season that began the previous September.
+  const seasonYear = now.getUTCMonth() <= 1 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
 
-  const url = `${BASE}/scores/?daysFrom=3&apiKey=${apiKey}`;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${seasonYear}&seasontype=2&week=${week}`;
   const res = await fetch(url);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Odds API error ${res.status}: ${text}`);
+    throw new Error(`ESPN scoreboard error ${res.status}: ${text}`);
   }
-  const events = await res.json();
+  const data = await res.json();
 
   let written = 0;
-  for (const ev of events) {
-    if (!ev.completed || !ev.scores) continue;
-    const homeAbbr = abbrForTeamName(ev.home_team);
-    const awayAbbr = abbrForTeamName(ev.away_team);
-    if (!homeAbbr || !awayAbbr) continue;
+  for (const event of data.events || []) {
+    const competition = event.competitions && event.competitions[0];
+    if (!competition) continue;
+    const statusType = competition.status && competition.status.type;
+    if (!statusType || !statusType.completed) continue; // only record finished games
 
-    const homeScore = ev.scores.find(s => abbrForTeamName(s.name) === homeAbbr);
-    const awayScore = ev.scores.find(s => abbrForTeamName(s.name) === awayAbbr);
-    if (!homeScore || !awayScore) continue;
+    const competitors = competition.competitors || [];
+    if (competitors.length !== 2) continue;
+    // A tie means neither side has winner:true — skip both, matching the
+    // previous behavior of never recording a result for a tied game.
+    const anyWinner = competitors.some(c => c.winner === true);
+    if (!anyWinner) continue;
 
-    const hs = Number(homeScore.score);
-    const as = Number(awayScore.score);
-    if (Number.isNaN(hs) || Number.isNaN(as) || hs === as) continue; // skip ties/incomplete
-
-    const homeResult = hs > as ? 'W' : 'L';
-    const awayResult = hs > as ? 'L' : 'W';
-
-    await pool.query(
-      `INSERT INTO weekly_results (week, team, result) VALUES ($1,$2,$3)
-       ON CONFLICT (week, team) DO UPDATE SET result = EXCLUDED.result`,
-      [week, homeAbbr, homeResult]
-    );
-    await pool.query(
-      `INSERT INTO weekly_results (week, team, result) VALUES ($1,$2,$3)
-       ON CONFLICT (week, team) DO UPDATE SET result = EXCLUDED.result`,
-      [week, awayAbbr, awayResult]
-    );
-    written += 2;
+    for (const c of competitors) {
+      const abbr = abbrForTeamName(c.team && c.team.displayName);
+      if (!abbr) continue;
+      const result = c.winner === true ? 'W' : 'L';
+      await pool.query(
+        `INSERT INTO weekly_results (week, team, result) VALUES ($1,$2,$3)
+         ON CONFLICT (week, team) DO UPDATE SET result = EXCLUDED.result`,
+        [week, abbr, result]
+      );
+      written++;
+    }
   }
   return written;
 }
