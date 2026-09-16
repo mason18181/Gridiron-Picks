@@ -695,7 +695,7 @@ function renderScoreboardHistory(board, subnavHtml) {
     : board.filter(e => String(e.playerId) === String(scoreboardHistoryFilter));
 
   const flatRows = [];
-  filtered.forEach(e => { e.rows.forEach(r => flatRows.push({ name: e.name, ...r })); });
+  filtered.forEach(e => { e.rows.filter(r => r.status !== 'pending').forEach(r => flatRows.push({ name: e.name, ...r })); });
   flatRows.sort((a, b) => a.week - b.week || a.name.localeCompare(b.name));
 
   const rowsHtml = flatRows.map(r => `
