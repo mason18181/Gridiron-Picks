@@ -544,7 +544,9 @@ async function renderPicks() {
   const week = state.currentWeek;
   const data = await api(`/api/week/${week}`);
   const existing = data.existingPick;
-  const disabledAll = !!existing && (existing.locked || existing.change_used);
+  const existingTeamRow = existing ? (data.remainingTeams || []).find(t => t.team === existing.team) : null;
+  const gameKickedOff = !!(existingTeamRow && existingTeamRow.kicked);
+  const disabledAll = !!existing && (existing.locked || existing.change_used || gameKickedOff);
   if (disabledAll) pickSelection = null;
 
   function pointsPillsHtml(t) {
@@ -596,7 +598,7 @@ async function renderPicks() {
     statusHtml = `<p class="muted">No pick submitted yet for Week ${week}.</p>`;
     submitBtnHtml = `<button class="btn" id="submit-pick-btn" ${pickSelection ? '' : 'disabled'}>Submit pick</button>`;
   } else if (disabledAll) {
-    statusHtml = `<p class="success">Locked in: <b>${existing.team}</b>${existing.auto_assigned ? ' (auto-assigned)' : ''}${existing.change_used ? ' · change already used' : ''}</p>`;
+    statusHtml = `<p class="success">Locked in: <b>${existing.team}</b>${existing.auto_assigned ? ' (auto-assigned)' : ''}${gameKickedOff ? ' · your game has kicked off' : ''}${existing.change_used ? ' · change already used' : ''}</p>`;
     submitBtnHtml = `<button class="btn" id="submit-pick-btn" disabled>${existing.change_used ? 'Change already used' : 'Locked in'}</button>`;
   } else {
     const changing = pickSelection && pickSelection !== existing.team;
