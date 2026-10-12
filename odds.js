@@ -135,10 +135,8 @@ async function syncWeekResults(week) {
 
     const competitors = competition.competitors || [];
     if (competitors.length !== 2) continue;
-    // A tie means neither side has winner:true — skip both, matching the
-    // previous behavior of never recording a result for a tied game.
-    const anyWinner = competitors.some(c => c.winner === true);
-    if (!anyWinner) continue;
+    // A tied final has no winner:true on either side. House rule: a tie
+    // counts as a loss for both teams, which the W/L mapping below yields.
 
     for (const c of competitors) {
       const abbr = abbrForTeamName(c.team && c.team.displayName);
