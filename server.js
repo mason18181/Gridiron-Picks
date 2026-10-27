@@ -384,7 +384,7 @@ app.get('/api/week/:week', requirePlayer, async (req, res) => {
       const kicked = !!(o && o.commence_time && new Date(o.commence_time).getTime() <= Date.now());
       const bye = !o && weekHasOdds;
       const type = o ? matchupType(o.spread) : 'unknown';
-      const correctPoints = pointsForWin(type);
+      const correctPoints = isSeventeenth ? 2 : pointsForWin(type);
       const incorrectPoints = isSeventeenth ? 0 : (currentStreak + 1 >= 2 ? -1 : (type === 'favorite' ? -0.5 : 0));
       return {
         team: t,
