@@ -38,7 +38,7 @@ function computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam)
 
     let points;
     if (result === 'W') {
-      points = pointsForWin(type);
+      points = isTeam17 ? 2 : pointsForWin(type); // 17th team wins are always worth 2
       if (!isTeam17) streak = 0;
     } else if (isTeam17) {
       points = 0; // risk-free pick, no penalty, streak untouched
