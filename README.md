@@ -73,7 +73,8 @@ redeploys automatically.
   2nd loss on (streak and favorite penalties never stack — -1 is the max
   loss in a week)
 - The shared 17th team is always risk-free: a loss on it never costs points
-  and never counts toward a streak; a win on it is always **+2**, regardless of the matchup
+  and never counts toward a streak; a win on it is always **+2**, regardless of the
+  matchup, and ends any loss streak like any other win
 - Each roster team (including the 17th) can only be picked once per season
 
 ## Notes / limitations
