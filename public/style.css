@@ -155,4 +155,11 @@ tr.me { background: rgba(232,185,74,0.06); }
 .error { color: var(--danger); font-size: 13px; margin-top: 6px; }
 .success { color: var(--green); font-size: 13px; margin-top: 6px; }
 
+.info-btn { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; padding: 0; vertical-align: middle; }
+.info-btn:hover { border-color: var(--gold); color: var(--gold); }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+.modal-box { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px; max-width: 520px; width: 100%; }
+.info-cols { display: flex; gap: 16px; margin-top: 12px; }
+.info-col { flex: 1; min-width: 0; }
+.info-row { font-size: 12px; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
 .divider { height: 1px; background: var(--line); margin: 18px 0; }
