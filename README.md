@@ -75,6 +75,9 @@ redeploys automatically.
 - The shared 17th team is always risk-free: a loss on it never costs points
   and never counts toward a streak; a win on it is always **+2**, regardless of the
   matchup, and ends any loss streak like any other win
+- Missing a pick after the 17th team is already used is a forfeit: it scores as
+  a loss (normal streak rules; -0.5 as a first loss, -1 from the 2nd on), and one random unused team is also removed from
+  that player's bank so no one finishes with extra picks available
 - Each roster team (including the 17th) can only be picked once per season
 
 ## Notes / limitations
