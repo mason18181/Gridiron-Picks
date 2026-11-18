@@ -47,7 +47,8 @@ function computePlayerHistory(picks, oddsByWeek, resultsByWeek, seventeenthTeam)
       if (streak >= 2) {
         points = -1;
       } else {
-        points = type === 'favorite' ? -0.5 : 0;
+        // A forfeit has no matchup, so it takes the favorite-loss penalty.
+        points = (type === 'favorite' || team === 'FORFEIT') ? -0.5 : 0;
       }
     }
 
