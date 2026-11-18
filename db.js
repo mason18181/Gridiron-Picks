@@ -79,6 +79,29 @@ async function initSchema() {
       PRIMARY KEY (week, team)
     );
 
+    -- A player who forfeits a week (no pick and the 17th team already used)
+    -- loses one random unused team from their bank so they don't finish the
+    -- season with more picks available than everyone else.
+    CREATE TABLE IF NOT EXISTS removed_teams (
+      player_id INT REFERENCES players(id),
+      team TEXT NOT NULL,
+      forfeit_week INT NOT NULL,
+      PRIMARY KEY (player_id, team),
+      UNIQUE (player_id, forfeit_week)
+    );
+
+    -- Final scores for every completed game, used for the matchup info pop-up
+    -- (records and last-3 results are derived from these rows).
+    CREATE TABLE IF NOT EXISTS game_results (
+      week INT NOT NULL,
+      team TEXT NOT NULL,
+      opponent TEXT NOT NULL,
+      team_score INT NOT NULL,
+      opp_score INT NOT NULL,
+      result TEXT CHECK (result IN ('W','L','T')) NOT NULL,
+      PRIMARY KEY (week, team)
+    );
+
     CREATE TABLE IF NOT EXISTS player_picks (
       id SERIAL PRIMARY KEY,
       player_id INT REFERENCES players(id),
