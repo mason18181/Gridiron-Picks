@@ -292,31 +292,6 @@ async function renderDraftPage() {
     </div>
   `;
 
-  function lastGamesHtml(teamAbbr, info) {
-    const rec = info && info.record ? info.record : '—';
-    const rows = info && info.last3 && info.last3.length
-      ? info.last3.map(g => `<div class="info-row"><span class="pill ${g.result === 'W' ? 'win' : (g.result === 'L' ? 'loss' : '')}">${g.result}</span> vs ${g.opponent} <b>${g.teamScore}-${g.oppScore}</b> <span class="muted">wk ${g.week}</span></div>`).join('')
-      : '<div class="muted">No completed games stored yet.</div>';
-    return `<div class="info-col"><div class="team-abbr">${teamAbbr}</div><div class="muted">Record ${rec}</div><div class="muted" style="margin-top:8px;">Last 3</div>${rows}</div>`;
-  }
-  app.querySelectorAll('.info-btn').forEach(btn => {
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const t = data.remainingTeams.find(x => x.team === btn.dataset.info);
-      if (!t || !t.odds) return;
-      const info = t.info || {};
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.innerHTML = `
-        <div class="modal-box">
-          <div class="row" style="justify-content:space-between;"><h2 style="margin:0;">${t.team} vs ${t.odds.opponent}</h2><button type="button" class="info-btn" id="info-close">✕</button></div>
-          <div class="info-cols">${lastGamesHtml(t.team, info.team)}${lastGamesHtml(t.odds.opponent, info.opponent)}</div>
-        </div>`;
-      overlay.addEventListener('click', e => { if (e.target === overlay || e.target.id === 'info-close') overlay.remove(); });
-      document.body.appendChild(overlay);
-    });
-  });
-
   app.querySelectorAll('.team-card[data-pickable="1"]').forEach(card => {
     card.addEventListener('click', () => {
       draftSelection = card.dataset.team;
@@ -647,6 +622,31 @@ async function renderPicks() {
       <div class="error" id="pick-err"></div>
     </div>
   `;
+
+  function lastGamesHtml(teamAbbr, info) {
+    const rec = info && info.record ? info.record : '—';
+    const rows = info && info.last3 && info.last3.length
+      ? info.last3.map(g => `<div class="info-row"><span class="pill ${g.result === 'W' ? 'win' : (g.result === 'L' ? 'loss' : '')}">${g.result}</span> vs ${g.opponent} <b>${g.teamScore}-${g.oppScore}</b> <span class="muted">wk ${g.week}</span></div>`).join('')
+      : '<div class="muted">No completed games stored yet.</div>';
+    return `<div class="info-col"><div class="team-abbr">${teamAbbr}</div><div class="muted">Record ${rec}</div><div class="muted" style="margin-top:8px;">Last 3</div>${rows}</div>`;
+  }
+  app.querySelectorAll('.info-btn').forEach(btn => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const t = data.remainingTeams.find(x => x.team === btn.dataset.info);
+      if (!t || !t.odds) return;
+      const info = t.info || {};
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal-box">
+          <div class="row" style="justify-content:space-between;"><h2 style="margin:0;">${t.team} vs ${t.odds.opponent}</h2><button type="button" class="info-btn" id="info-close">✕</button></div>
+          <div class="info-cols">${lastGamesHtml(t.team, info.team)}${lastGamesHtml(t.odds.opponent, info.opponent)}</div>
+        </div>`;
+      overlay.addEventListener('click', e => { if (e.target === overlay || e.target.id === 'info-close') overlay.remove(); });
+      document.body.appendChild(overlay);
+    });
+  });
 
   app.querySelectorAll('.team-card[data-pickable="1"]').forEach(card => {
     card.addEventListener('click', () => {
