@@ -153,4 +153,53 @@ async function syncWeekResults(week) {
   return written;
 }
 
-module.exports = { syncWeekOdds, syncWeekResults };
+// Stores final scores (both sides) for completed games into game_results,
+// which feeds the matchup info pop-up. Fetches any week from 1 up to
+// throughWeek that has no rows yet, and always re-fetches the two most recent
+// weeks so late finishers are picked up. Returns the number of rows written.
+async function syncGameHistory(throughWeek) {
+  const now = new Date();
+  const seasonYear = now.getUTCMonth() <= 1 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
+  const have = new Set((await pool.query('SELECT DISTINCT week FROM game_results')).rows.map(r => r.week));
+  const weeks = [];
+  for (let w = 1; w <= throughWeek; w++) {
+    if (!have.has(w) || w >= throughWeek - 1) weeks.push(w);
+  }
+
+  let written = 0;
+  for (const week of weeks) {
+    const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${seasonYear}&seasontype=2&week=${week}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`ESPN scoreboard error ${res.status} (week ${week})`);
+    const data = await res.json();
+    for (const event of data.events || []) {
+      const competition = event.competitions && event.competitions[0];
+      if (!competition) continue;
+      const statusType = competition.status && competition.status.type;
+      if (!statusType || !statusType.completed) continue;
+      const comps = competition.competitors || [];
+      if (comps.length !== 2) continue;
+      const parsed = comps.map(c => ({
+        abbr: abbrForTeamName(c.team && c.team.displayName),
+        score: parseInt(c.score, 10),
+        winner: c.winner === true,
+      }));
+      if (parsed.some(p => !p.abbr || Number.isNaN(p.score))) continue;
+      for (let i = 0; i < 2; i++) {
+        const me = parsed[i], opp = parsed[1 - i];
+        const result = me.score === opp.score ? 'T' : (me.winner ? 'W' : 'L');
+        await pool.query(
+          `INSERT INTO game_results (week, team, opponent, team_score, opp_score, result)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (week, team) DO UPDATE
+           SET opponent=EXCLUDED.opponent, team_score=EXCLUDED.team_score, opp_score=EXCLUDED.opp_score, result=EXCLUDED.result`,
+          [week, me.abbr, opp.abbr, me.score, opp.score, result]
+        );
+        written++;
+      }
+    }
+  }
+  return written;
+}
+
+module.exports = { syncWeekOdds, syncWeekResults, syncGameHistory };
