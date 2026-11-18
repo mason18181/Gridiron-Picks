@@ -292,6 +292,31 @@ async function renderDraftPage() {
     </div>
   `;
 
+  function lastGamesHtml(teamAbbr, info) {
+    const rec = info && info.record ? info.record : '—';
+    const rows = info && info.last3 && info.last3.length
+      ? info.last3.map(g => `<div class="info-row"><span class="pill ${g.result === 'W' ? 'win' : (g.result === 'L' ? 'loss' : '')}">${g.result}</span> vs ${g.opponent} <b>${g.teamScore}-${g.oppScore}</b> <span class="muted">wk ${g.week}</span></div>`).join('')
+      : '<div class="muted">No completed games stored yet.</div>';
+    return `<div class="info-col"><div class="team-abbr">${teamAbbr}</div><div class="muted">Record ${rec}</div><div class="muted" style="margin-top:8px;">Last 3</div>${rows}</div>`;
+  }
+  app.querySelectorAll('.info-btn').forEach(btn => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const t = data.remainingTeams.find(x => x.team === btn.dataset.info);
+      if (!t || !t.odds) return;
+      const info = t.info || {};
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal-box">
+          <div class="row" style="justify-content:space-between;"><h2 style="margin:0;">${t.team} vs ${t.odds.opponent}</h2><button type="button" class="info-btn" id="info-close">✕</button></div>
+          <div class="info-cols">${lastGamesHtml(t.team, info.team)}${lastGamesHtml(t.odds.opponent, info.opponent)}</div>
+        </div>`;
+      overlay.addEventListener('click', e => { if (e.target === overlay || e.target.id === 'info-close') overlay.remove(); });
+      document.body.appendChild(overlay);
+    });
+  });
+
   app.querySelectorAll('.team-card[data-pickable="1"]').forEach(card => {
     card.addEventListener('click', () => {
       draftSelection = card.dataset.team;
@@ -566,7 +591,7 @@ async function renderPicks() {
     const countdown = o && !t.kicked ? formatCountdown(o.commence_time) : null;
     return `
       <div class="team-card ${!clickable ? 'disabled' : ''} ${isSelected ? 'selected' : ''}" data-team="${t.team}" ${clickable ? 'data-pickable="1"' : ''}>
-        <div class="team-abbr">${t.team}${t.isSeventeenth ? ' <span class="pill gold" style="font-size:9px;">RISK-FREE</span>' : ''}</div>
+        <div class="team-abbr">${t.team}${t.odds ? ` <button type="button" class="info-btn" data-info="${t.team}" title="Matchup info">i</button>` : ''}${t.isSeventeenth ? ' <span class="pill gold" style="font-size:9px;">RISK-FREE</span>' : ''}</div>
         <div class="team-meta">${o ? `vs ${o.opponent}` : (t.bye ? 'No game this week' : 'No matchup posted')}</div>
         <div class="team-meta">${spreadTxt}${t.kicked ? ' · KICKED OFF' : ''}</div>
         ${o && o.commence_time ? `<div class="team-meta">${formatKickoff(o.commence_time)}</div>` : ''}
@@ -608,10 +633,15 @@ async function renderPicks() {
     submitBtnHtml = `<button class="btn" id="submit-pick-btn" ${changing ? '' : 'disabled'}>${changing ? 'Confirm change' : 'Submit pick'}</button>`;
   }
 
+  const removedNote = (data.removedTeams && data.removedTeams.length)
+    ? `<p class="muted" style="font-size:12px;">Removed from your bank for forfeiting: ${data.removedTeams.map(r => `<b>${r.team}</b> (week ${r.forfeit_week})`).join(', ')}</p>`
+    : '';
+
   app.innerHTML = `
     <div class="card">
       <h2>Week ${week} picks</h2>
       ${statusHtml}
+      ${removedNote}
       ${columnsHtml}
       <div class="row" style="margin-top:14px;">${submitBtnHtml}</div>
       <div class="error" id="pick-err"></div>
@@ -1002,7 +1032,7 @@ async function renderHostAdmin() {
       err.textContent = '';
       const d = r.diagnostics;
       if (r.rows > 0) {
-        ok.textContent = `Synced spreads for ${r.rows} teams.`;
+        ok.textContent = `Synced spreads for ${r.rows} teams.` + (r.historyError ? ` Game history failed: ${r.historyError}` : ` Game history: ${r.history} game rows updated.`);
       } else {
         // Nothing got written — show exactly where the count dropped to
         // zero instead of just reporting the empty result.
@@ -1040,7 +1070,7 @@ async function renderHostAdmin() {
     if (!confirm(`Auto-assign the 17th team (or a forfeit) to anyone who didn't pick for week ${week}? This locks their pick for that week.`)) return;
     try {
       const r = await api('/api/host/process-missed', { method: 'POST', asHost: true, body: { week } });
-      ok.textContent = `Auto-assigned team 17 for ${r.assigned}, forfeited ${r.forfeited}.`; err.textContent = '';
+      ok.textContent = `Auto-assigned team 17 for ${r.assigned}, forfeited ${r.forfeited}, removed ${r.removed} team(s) from forfeiting players' banks.`; err.textContent = '';
     } catch (e) { err.textContent = e.message; ok.textContent = ''; }
   };
 
