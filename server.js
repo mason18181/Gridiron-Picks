@@ -4,7 +4,7 @@ const path = require('path');
 const cron = require('node-cron');
 const { pool, initSchema } = require('./db');
 const { TEAMS } = require('./teams');
-const { syncWeekOdds, syncWeekResults } = require('./odds');
+const { syncWeekOdds, syncWeekResults, syncGameHistory } = require('./odds');
 const { computeScoreboard, computePlayerHistory, matchupType, pointsForWin } = require('./scoring');
 
 // A second layer of defense beyond the pool's own error handler (db.js) —
@@ -351,7 +351,8 @@ async function getCurrentStreakForPlayer(playerId, beforeWeek, seventeenthTeam) 
 async function rosterFor(playerId, seventeenthTeam) {
   const drafted = (await pool.query('SELECT team FROM draft_picks WHERE player_id=$1', [playerId])).rows.map(r => r.team);
   if (seventeenthTeam) drafted.push(seventeenthTeam);
-  return drafted;
+  const removed = (await pool.query('SELECT team FROM removed_teams WHERE player_id=$1', [playerId])).rows.map(r => r.team);
+  return drafted.filter(t => !removed.includes(t));
 }
 
 app.get('/api/week/:week', requirePlayer, async (req, res) => {
@@ -405,7 +406,25 @@ app.get('/api/week/:week', requirePlayer, async (req, res) => {
     canChange = !o || !o.commence_time || new Date(o.commence_time).getTime() > Date.now();
   }
 
-  res.json({ week, remainingTeams: remaining, existingPick: existing, canChange, weekHasOdds });
+  // Records and last-3 results for every team in the matchup pop-up, derived
+  // from stored final scores (no outside call happens when a player taps).
+  const gameRows = (await pool.query('SELECT week, team, opponent, team_score, opp_score, result FROM game_results ORDER BY week')).rows;
+  const infoFor = (abbr) => {
+    const games = gameRows.filter(g => g.team === abbr);
+    const w = games.filter(g => g.result === 'W').length;
+    const l = games.filter(g => g.result === 'L').length;
+    const t = games.filter(g => g.result === 'T').length;
+    return {
+      record: games.length ? `${w}-${l}${t ? '-' + t : ''}` : null,
+      last3: games.slice(-3).reverse().map(g => ({ week: g.week, opponent: g.opponent, teamScore: g.team_score, oppScore: g.opp_score, result: g.result })),
+    };
+  };
+  remaining.forEach(r => {
+    if (r.odds) r.info = { team: infoFor(r.team), opponent: infoFor(r.odds.opponent) };
+  });
+
+  const removedTeams = (await pool.query('SELECT team, forfeit_week FROM removed_teams WHERE player_id=$1 ORDER BY forfeit_week', [req.player.id])).rows;
+  res.json({ week, remainingTeams: remaining, existingPick: existing, canChange, weekHasOdds, removedTeams });
 });
 
 app.post('/api/picks', requirePlayer, async (req, res) => {
@@ -462,7 +481,11 @@ app.post('/api/host/sync-odds', requireHost, async (req, res) => {
   const { week } = req.body;
   try {
     const result = await syncWeekOdds(week);
-    res.json({ ok: true, rows: result.written, diagnostics: result.diagnostics });
+    // Also refresh the game history behind the matchup info pop-up. Best
+    // effort: a failure here must not hide the odds result.
+    let history = null, historyError = null;
+    try { history = await syncGameHistory(week); } catch (e) { historyError = e.message; }
+    res.json({ ok: true, rows: result.written, diagnostics: result.diagnostics, history, historyError });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -529,7 +552,30 @@ async function processMissedPicksForWeek(week) {
       forfeited++;
     }
   }
-  return { assigned, forfeited };
+
+  // Every forfeit costs the player one random unused team. This runs for all
+  // forfeits (not just this week's) and is idempotent, so a forfeit that was
+  // recorded before this rule existed gets its team removed too.
+  let removed = 0;
+  const forfeitPicks = (await pool.query(
+    `SELECT pp.player_id, pp.week FROM player_picks pp
+     WHERE pp.team='FORFEIT'
+       AND NOT EXISTS (SELECT 1 FROM removed_teams r WHERE r.player_id=pp.player_id AND r.forfeit_week=pp.week)
+     ORDER BY pp.week`
+  )).rows;
+  for (const f of forfeitPicks) {
+    const roster = await rosterFor(f.player_id, cfg.seventeenth_team);
+    const used = (await pool.query('SELECT team FROM player_picks WHERE player_id=$1', [f.player_id])).rows.map(r => r.team);
+    const candidates = roster.filter(t => !used.includes(t));
+    if (!candidates.length) continue; // nothing left to take
+    const team = candidates[Math.floor(Math.random() * candidates.length)];
+    await pool.query(
+      'INSERT INTO removed_teams (player_id, team, forfeit_week) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
+      [f.player_id, team, f.week]
+    );
+    removed++;
+  }
+  return { assigned, forfeited, removed };
 }
 
 app.post('/api/host/process-missed', requireHost, async (req, res) => {
@@ -637,8 +683,8 @@ async function runWeeklyAutomation() {
     }
 
     try {
-      const { assigned, forfeited } = await processMissedPicksForWeek(outgoingWeek);
-      console.log(`Auto process-missed: assigned ${assigned}, forfeited ${forfeited} for week ${outgoingWeek}`);
+      const { assigned, forfeited, removed } = await processMissedPicksForWeek(outgoingWeek);
+      console.log(`Auto process-missed: assigned ${assigned}, forfeited ${forfeited}, removed ${removed} team(s) for week ${outgoingWeek}`);
     } catch (e) {
       console.error('Auto process-missed failed', e);
     }
@@ -651,6 +697,13 @@ async function runWeeklyAutomation() {
       console.log(`Auto sync-odds: wrote ${result.written} rows for week ${newWeek}`);
     } catch (e) {
       console.error('Auto sync-odds failed', e);
+    }
+
+    try {
+      const n = await syncGameHistory(newWeek);
+      console.log(`Auto game-history: wrote ${n} rows through week ${newWeek}`);
+    } catch (e) {
+      console.error('Auto game-history failed', e);
     }
 
     await pool.query('UPDATE config SET last_auto_run = $1 WHERE id=1', [today]);
